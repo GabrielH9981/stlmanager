@@ -277,6 +277,9 @@ let isProjWireframe = false;
 let activePlateLoadId = 0;
 let activeMainLoadId = 0;
 let activeProjLoadId = 0;
+let currentViewerSessionId = 0;
+let activeViewerAbortController = null;
+let activePlateAbortController = null;
 
 function clearPlateScene() {
     if (!plateScene) return;
@@ -1843,6 +1846,10 @@ function switchPlateSubMode(subMode) {
     state.plateSubMode = subMode;
     if (subMode === '2d') {
         activePlateLoadId++;
+        if (activePlateAbortController) {
+            try { activePlateAbortController.abort(); } catch (e) {}
+            activePlateAbortController = null;
+        }
         clearPlateScene();
         btnPlateView2D.classList.add('active');
         btnPlateView3D.classList.remove('active');
@@ -1855,7 +1862,7 @@ function switchPlateSubMode(subMode) {
         plateFrame3D.style.display = 'block';
         onPlateWindowResize();
 
-        if (currentPlatesData && currentPlatesData.plates) {
+        if (currentPlatesData && currentPlatesData.plates && state.activeModel) {
             const plate = currentPlatesData.plates[activePlateIndex];
             if (plate) {
                 loadPlate3DMesh(state.activeModel.id, plate.index);
@@ -1865,19 +1872,39 @@ function switchPlateSubMode(subMode) {
 }
 
 async function loadPlate3DMesh(modelId, plateNum) {
+    const sessionId = currentViewerSessionId;
     const thisLoadId = ++activePlateLoadId;
     clearPlateScene();
     currentPlate3DNum = `${modelId}_${plateNum}`;
 
+    if (activePlateAbortController) {
+        try { activePlateAbortController.abort(); } catch (e) {}
+    }
+    activePlateAbortController = new AbortController();
+
     plate3DLoader.style.display = 'flex';
-    plate3DLoader.innerHTML = `<div class="spinner"></div><span>Extraindo malha 3D da mesa ${plateNum}...</span>`;
+    plate3DLoader.innerHTML = `<div class="spinner"></div><span>Carregando malha 3D da mesa ${plateNum}...</span>`;
 
     try {
-        AppLogger.info('PLATE_3D', `Baixando modelo 3D otimizado para mesa ${plateNum}...`);
+        AppLogger.info('PLATE_3D', `Carregando modelo 3D para mesa ${plateNum}...`);
+        
+        const response = await fetch(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`, {
+            signal: activePlateAbortController.signal
+        });
+
+        if (!response.ok) {
+            throw new Error(`Servidor respondeu com status ${response.status}`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+
+        if (thisLoadId !== activePlateLoadId || sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+            return; // Descartado: usuário trocou de tela ou fechou
+        }
+
         const loader = new GLTFLoader();
-        loader.load(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`, (gltf) => {
-            if (thisLoadId !== activePlateLoadId) {
-                // Requisição obsoleta descartada
+        loader.parse(arrayBuffer, '', (gltf) => {
+            if (thisLoadId !== activePlateLoadId || sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
                 return;
             }
             clearPlateScene();
@@ -1911,27 +1938,22 @@ async function loadPlate3DMesh(modelId, plateNum) {
             AppLogger.info('PLATE_3D', `✓ Mesa ${plateNum} renderizada em 3D com sucesso.`);
 
             resetPlateCamera();
-        }, undefined, (err) => {
-            if (thisLoadId !== activePlateLoadId) return;
-            AppLogger.error('PLATE_3D', `Falha ao carregar 3D da mesa ${plateNum}`, err);
-            plate3DLoader.innerHTML = `
-                <div style="color: #F43F5E; text-align: center; font-size: 0.85rem; padding: 20px;">
-                    <p style="margin-bottom: 6px; font-weight: 600;">Visualização 3D individual desta mesa não disponível.</p>
-                    <span style="font-size: 0.78rem; color: #94A3B8;">Use a aba "Foto da Mesa" para inspecionar o fatiamento original com precisão ou abra no Bambu Studio.</span>
-                </div>
-            `;
+            updateCacheStatus();
+        }, (err) => {
+            throw err;
         });
     } catch (e) {
-        if (thisLoadId !== activePlateLoadId) return;
-        AppLogger.error('PLATE_3D', `Erro ao solicitar malha 3D da mesa ${plateNum}`, e);
+        if (e.name === 'AbortError' || thisLoadId !== activePlateLoadId || sessionId !== currentViewerSessionId) {
+            return;
+        }
+        AppLogger.error('PLATE_3D', `Falha ao carregar 3D da mesa ${plateNum}`, e);
+        plate3DLoader.innerHTML = `
+            <div style="color: #F43F5E; text-align: center; font-size: 0.85rem; padding: 20px;">
+                <p style="margin-bottom: 6px; font-weight: 600;">Visualização 3D individual desta mesa não disponível.</p>
+                <span style="font-size: 0.78rem; color: #94A3B8;">Use a aba "Foto da Mesa" para inspecionar o fatiamento original com precisão ou abra no Bambu Studio.</span>
+            </div>
+        `;
     }
-}
-
-function preloadPlate3DMesh(modelId, plateNum) {
-    if (!modelId || !plateNum) return;
-    fetch(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`)
-        .then(() => AppLogger.debug('PREFETCH', `✓ Mesa ${plateNum} pré-carregada no cache.`))
-        .catch(() => {});
 }
 
 async function updateCacheStatus() {
@@ -2017,6 +2039,7 @@ function selectPlate(index) {
 
     activePlateIndex = index;
     const plate = currentPlatesData.plates[index];
+    const currentSession = currentViewerSessionId;
 
     // Atualiza classes ativas na strip e rola
     const items = platesStrip.querySelectorAll('.plate-strip-item');
@@ -2029,20 +2052,26 @@ function selectPlate(index) {
         }
     });
 
-    // Se estiver em modo 3D, carrega malha da nova mesa selecionada
+    // Se estiver em modo 3D, carrega malha da nova mesa selecionada sob demanda
     if (state.plateSubMode === '3d') {
         loadPlate3DMesh(state.activeModel.id, plate.index);
     } else {
         activePlateLoadId++;
+        if (activePlateAbortController) {
+            try { activePlateAbortController.abort(); } catch (e) {}
+            activePlateAbortController = null;
+        }
         clearPlateScene();
-        // Pré-carrega a malha 3D da mesa em segundo plano silencioso
-        preloadPlate3DMesh(state.activeModel.id, plate.index);
     }
 
     // Atualiza imagem 2D principal
     plateMainImg.style.opacity = '0.3';
-    plateMainImg.onload = () => { plateMainImg.style.opacity = '1'; };
-    plateMainImg.onerror = () => { plateMainImg.style.opacity = '1'; };
+    plateMainImg.onload = () => { 
+        if (currentViewerSessionId === currentSession) plateMainImg.style.opacity = '1'; 
+    };
+    plateMainImg.onerror = () => { 
+        if (currentViewerSessionId === currentSession) plateMainImg.style.opacity = '1'; 
+    };
     plateMainImg.src = plate.image_url;
 
     // Atualiza card de informações da mesa
@@ -2079,6 +2108,7 @@ function selectPlate(index) {
 // ==========================================
 async function load3DScene(model) {
     if (is3DLoadedForCurrentModel && currentObject) return;
+    const sessionId = currentViewerSessionId;
     const thisLoadId = ++activeMainLoadId;
 
     viewerLoader.style.display = 'flex';
@@ -2091,7 +2121,9 @@ async function load3DScene(model) {
 
     try {
         const object3d = await load3DFile(model);
-        if (thisLoadId !== activeMainLoadId) return;
+        if (thisLoadId !== activeMainLoadId || sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+            return;
+        }
 
         clearMainScene();
         const box = new THREE.Box3().setFromObject(object3d);
@@ -2106,7 +2138,9 @@ async function load3DScene(model) {
         AppLogger.info('VIEWER', `✓ Modelo ${model.filename} renderizado com sucesso no viewport.`);
         resetCamera();
     } catch (err) {
-        if (thisLoadId !== activeMainLoadId) return;
+        if (thisLoadId !== activeMainLoadId || sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+            return;
+        }
         AppLogger.error('VIEWER', `Falha ao abrir modelo ${model.filename}`, err);
         viewerLoader.innerHTML = `
             <div style="color: #F43F5E; text-align: center; max-width: 480px; padding: 20px;">
@@ -2120,6 +2154,17 @@ async function load3DScene(model) {
 }
 
 async function openViewer(model) {
+    const sessionId = ++currentViewerSessionId;
+    if (activeViewerAbortController) {
+        try { activeViewerAbortController.abort(); } catch (e) {}
+    }
+    activeViewerAbortController = new AbortController();
+
+    if (activePlateAbortController) {
+        try { activePlateAbortController.abort(); } catch (e) {}
+        activePlateAbortController = null;
+    }
+
     AppLogger.info('VIEWER', `Abrindo visualizador para [${model.id}] ${model.filename}...`);
     activePlateLoadId++;
     activeMainLoadId++;
@@ -2131,6 +2176,13 @@ async function openViewer(model) {
     currentPlatesData = null;
     activePlateIndex = 0;
     currentPlate3DNum = null;
+
+    // Limpa estado visual anterior para evitar qualquer resquício
+    platesStrip.innerHTML = '';
+    plateMainImg.src = '';
+    modalModeSwitch.style.display = 'none';
+    platesStripContainer.style.display = 'none';
+    megaprojectNotice.style.display = 'none';
 
     modalModelTitle.textContent = model.filename;
     modalDownloadBtn.href = `/api/models/${model.id}/file`;
@@ -2155,9 +2207,17 @@ async function openViewer(model) {
 
     if (ext === '.3mf') {
         try {
-            const resp = await fetch(`/api/models/${model.id}/plates`);
+            const resp = await fetch(`/api/models/${model.id}/plates`, {
+                signal: activeViewerAbortController.signal
+            });
+            if (sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+                return;
+            }
             if (resp.ok) {
                 const platesData = await resp.json();
+                if (sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+                    return;
+                }
                 if (platesData.is_project && platesData.plates && platesData.plates.length > 0) {
                     currentPlatesData = platesData;
                     modalModeSwitch.style.display = 'flex';
@@ -2182,8 +2242,13 @@ async function openViewer(model) {
                 }
             }
         } catch (e) {
+            if (e.name === 'AbortError') return;
             AppLogger.warn('VIEWER', `Não foi possível carregar mesas do 3MF: ${e.message}`);
         }
+    }
+
+    if (sessionId !== currentViewerSessionId || viewerModal.style.display === 'none') {
+        return;
     }
 
     modalModeSwitch.style.display = 'none';
@@ -2208,12 +2273,28 @@ function resetCamera() {
 }
 
 function closeModal() {
+    currentViewerSessionId++;
+    if (activeViewerAbortController) {
+        try { activeViewerAbortController.abort(); } catch (e) {}
+        activeViewerAbortController = null;
+    }
+    if (activePlateAbortController) {
+        try { activePlateAbortController.abort(); } catch (e) {}
+        activePlateAbortController = null;
+    }
+
     activePlateLoadId++;
     activeMainLoadId++;
     viewerModal.style.display = 'none';
     is3DLoadedForCurrentModel = false;
     currentPlatesData = null;
     currentPlate3DNum = null;
+    state.activeModel = null;
+
+    plateMainImg.src = '';
+    platesStrip.innerHTML = '';
+    modalModelTitle.textContent = '';
+
     clearPlateScene();
     clearMainScene();
 }

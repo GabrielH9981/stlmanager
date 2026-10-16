@@ -740,7 +740,7 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
 
         def parse_3mf_transform(t_str):
             if not t_str:
-                return np.eye(4, dtype=float)
+                return np.eye(4, dtype=np.float32)
             try:
                 parts = [float(x) for x in t_str.strip().split()]
                 if len(parts) == 12:
@@ -749,55 +749,12 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                         [parts[1], parts[4], parts[7], parts[10]],
                         [parts[2], parts[5], parts[8], parts[11]],
                         [0.0,      0.0,      0.0,      1.0]
-                    ], dtype=float)
+                    ], dtype=np.float32)
                 elif len(parts) == 16:
-                    return np.array(parts, dtype=float).reshape((4, 4))
+                    return np.array(parts, dtype=np.float32).reshape((4, 4))
             except Exception:
                 pass
-            return np.eye(4, dtype=float)
-
-        def parse_xml_object(xml_bytes, target_oid=None):
-            context = ET.iterparse(io.BytesIO(xml_bytes), events=('start', 'end'))
-            current_obj_id = None
-            is_target = False
-            components = []
-            verts = []
-            tris = []
-
-            for event, elem in context:
-                tag = elem.tag.split('}')[-1]
-                if event == 'start':
-                    if tag == 'object':
-                        current_obj_id = str(elem.attrib.get('id', ''))
-                        is_target = (target_oid is None or current_obj_id == str(target_oid))
-                    elif is_target and tag == 'component':
-                        c_path = None
-                        for k, v in elem.attrib.items():
-                            if k.endswith('path'):
-                                c_path = v.lstrip('/')
-                                break
-                        components.append({
-                            'path': c_path,
-                            'objectid': str(elem.attrib.get('objectid', '')),
-                            'transform': parse_3mf_transform(elem.attrib.get('transform'))
-                        })
-                elif event == 'end':
-                    if is_target:
-                        if tag == 'vertex':
-                            at = elem.attrib
-                            if 'x' in at and 'y' in at and 'z' in at:
-                                verts.append([float(at['x']), float(at['y']), float(at['z'])])
-                        elif tag == 'triangle':
-                            at = elem.attrib
-                            if 'v1' in at and 'v2' in at and 'v3' in at:
-                                tris.append([int(at['v1']), int(at['v2']), int(at['v3'])])
-                    if tag == 'object':
-                        if is_target and target_oid is not None:
-                            break
-                    if tag in ('vertex', 'triangle'):
-                        elem.clear()
-
-            return components, verts, tris
+            return np.eye(4, dtype=np.float32)
 
         with zipfile.ZipFile(filepath) as z:
             names = set(z.namelist())
@@ -823,10 +780,10 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                         if pid == plate_num:
                             for mi in plate.findall('.//model_instance'):
                                 for meta in mi.findall('metadata'):
-                                    k = meta.attrib.get('key', '')
-                                    v = meta.attrib.get('value', '')
-                                    if k == 'object_id' and v:
-                                        object_ids.add(str(v))
+                                    if meta.attrib.get('key') == 'object_id':
+                                        val = meta.attrib.get('value')
+                                        if val:
+                                            object_ids.add(str(val))
                 except Exception as e:
                     logger.debug(f"Aviso ao ler model_settings.config: {e}")
 
@@ -838,7 +795,7 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                         idx_meta = p.find("metadata[@key='index']")
                         if idx_meta is not None and int(idx_meta.attrib.get('value', '0')) == plate_num:
                             for obj in p.findall('.//object'):
-                                for attr_key in ('object_id', 'id', 'identify_id'):
+                                for attr_key in ('object_id', 'id'):
                                     if attr_key in obj.attrib:
                                         object_ids.add(str(obj.attrib[attr_key]))
                 except Exception as e:
@@ -855,8 +812,9 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                 except Exception:
                     pass
 
-            # Pre-parse <build> em 3D/3dmodel.model para coletar transforms posicionais de instâncias
+            # Pre-parse 3D/3dmodel.model uma única vez (build transforms e componentes)
             build_transforms = {}
+            model_objects = {}
             if '3D/3dmodel.model' in names:
                 try:
                     root_3d = ET.fromstring(z.read('3D/3dmodel.model'))
@@ -865,87 +823,154 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                         t = parse_3mf_transform(item.attrib.get('transform'))
                         if oid:
                             build_transforms.setdefault(oid, []).append(t)
-                except Exception as e:
-                    logger.debug(f"Aviso ao ler build items de 3dmodel.model: {e}")
 
-            def resolve_object(rel_path, target_oid, current_mat, depth=0):
-                if depth > 6:
-                    return []
+                    for obj in root_3d.findall('.//{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}object'):
+                        oid = str(obj.attrib.get('id', ''))
+                        comps = []
+                        for c in obj.findall('.//{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}component'):
+                            c_path = None
+                            for k, val in c.attrib.items():
+                                if k.endswith('path'):
+                                    c_path = val.lstrip('/')
+                                    break
+                            comps.append({
+                                'path': c_path or '3D/3dmodel.model',
+                                'objectid': str(c.attrib.get('objectid', '')),
+                                'transform': parse_3mf_transform(c.attrib.get('transform'))
+                            })
+                        has_mesh = obj.find('.//{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}mesh') is not None
+                        model_objects[oid] = {'has_mesh': has_mesh, 'components': comps}
+                except Exception as e:
+                    logger.debug(f"Aviso ao ler 3dmodel.model: {e}")
+
+            # Planeja os trabalhos agrupando por arquivo de modelo
+            file_jobs = {}
+            def collect_components(oid, current_mat, depth=0):
+                if depth > 5:
+                    return
+                if oid in model_objects:
+                    obj_info = model_objects[oid]
+                    if obj_info['components']:
+                        for comp in obj_info['components']:
+                            c_path = comp['path']
+                            c_oid = comp['objectid']
+                            c_mat = comp['transform']
+                            combined = current_mat @ c_mat
+                            if c_path == '3D/3dmodel.model' and c_oid in model_objects and model_objects[c_oid]['components']:
+                                collect_components(c_oid, combined, depth + 1)
+                            else:
+                                file_jobs.setdefault(c_path, []).append((c_oid, combined))
+                    elif obj_info['has_mesh']:
+                        file_jobs.setdefault('3D/3dmodel.model', []).append((oid, current_mat))
+                else:
+                    for n in names:
+                        if n.startswith('3D/Objects/') and n.endswith('.model'):
+                            file_jobs.setdefault(n, []).append((oid, current_mat))
+
+            for oid in object_ids:
+                b_mats = build_transforms.get(oid) or [np.eye(4, dtype=np.float32)]
+                for b_mat in b_mats:
+                    collect_components(oid, b_mat)
+
+            # Fallback para mesa 1 se não houver mapeamento explícito
+            if not file_jobs and plate_num == 1:
+                if build_transforms:
+                    for b_oid, b_mats in build_transforms.items():
+                        for b_mat in b_mats:
+                            collect_components(b_oid, b_mat)
+                elif '3D/3dmodel.model' in names:
+                    file_jobs.setdefault('3D/3dmodel.model', []).append((None, np.eye(4, dtype=np.float32)))
+
+            # Executa a extração: CADA ARQUIVO XML É LIDO E DECOMPACTADO UMA ÚNICA VEZ
+            all_verts = []
+            all_faces = []
+            vertex_offset = 0
+
+            for rel_path, jobs in file_jobs.items():
                 actual_path = rel_path
                 if actual_path not in names:
                     actual_path = lower_names.get(rel_path.lower())
                     if not actual_path or actual_path not in names:
-                        return []
+                        continue
+
+                needed_oids = {j[0] for j in jobs if j[0] is not None}
+                extract_all = any(j[0] is None for j in jobs)
 
                 try:
                     xml_bytes = z.read(actual_path)
                 except Exception:
-                    return []
+                    continue
 
-                comps, verts, tris = parse_xml_object(xml_bytes, target_oid)
-                results = []
+                extracted = {}
+                context = ET.iterparse(io.BytesIO(xml_bytes), events=('start', 'end'))
+                curr_oid = None
+                is_target = False
+                v_list = []
+                t_list = []
 
-                if comps:
-                    for comp in comps:
-                        c_path = comp['path'] or actual_path
-                        c_oid = comp['objectid']
-                        c_mat = comp['transform']
-                        combined_mat = current_mat @ c_mat
-                        results.extend(resolve_object(c_path, c_oid, combined_mat, depth + 1))
-
-                if verts and tris:
-                    try:
-                        v_arr = np.array(verts, dtype=float)
-                        f_arr = np.array(tris, dtype=int)
-                        mesh = trimesh.Trimesh(vertices=v_arr, faces=f_arr)
-                        if current_mat is not None and not np.allclose(current_mat, np.eye(4)):
-                            mesh.apply_transform(current_mat)
-                        results.append(mesh)
-                    except Exception as ex:
-                        logger.warning(f"Erro ao instanciar Trimesh para objeto {target_oid}: {ex}")
-
-                return results
-
-            plate_meshes = []
-            for oid in object_ids:
-                b_mats = build_transforms.get(oid) or [np.eye(4, dtype=float)]
-                for b_mat in b_mats:
-                    meshes = resolve_object('3D/3dmodel.model', oid, b_mat)
-                    if not meshes:
-                        # Fallback: tentar direto nos arquivos 3D/Objects/*.model
-                        for n in names:
-                            if n.startswith('3D/Objects/') and n.endswith('.model'):
-                                meshes = resolve_object(n, oid, b_mat)
-                                if meshes:
+                for event, elem in context:
+                    tag = elem.tag.split('}')[-1]
+                    if event == 'start':
+                        if tag == 'object':
+                            curr_oid = elem.attrib.get('id', '')
+                            is_target = extract_all or (curr_oid in needed_oids)
+                    elif event == 'end':
+                        if is_target:
+                            if tag == 'vertex':
+                                at = elem.attrib
+                                if 'x' in at and 'y' in at and 'z' in at:
+                                    v_list.append([float(at['x']), float(at['y']), float(at['z'])])
+                            elif tag == 'triangle':
+                                at = elem.attrib
+                                if 'v1' in at and 'v2' in at and 'v3' in at:
+                                    t_list.append([int(at['v1']), int(at['v2']), int(at['v3'])])
+                        if tag == 'object':
+                            if is_target and v_list and t_list:
+                                extracted[curr_oid] = (np.array(v_list, dtype=np.float32), np.array(t_list, dtype=np.int32))
+                                v_list = []
+                                t_list = []
+                                if not extract_all and len(extracted) == len(needed_oids):
                                     break
-                    plate_meshes.extend(meshes)
+                            is_target = False
+                        if tag in ('vertex', 'triangle', 'object'):
+                            elem.clear()
 
-            # Fallback especial para arquivos com mesa única sem metadados explícitos de mesa
-            if not plate_meshes and plate_num == 1:
-                if '3D/3dmodel.model' in names:
-                    if build_transforms:
-                        for oid, b_mats in build_transforms.items():
-                            for b_mat in b_mats:
-                                plate_meshes.extend(resolve_object('3D/3dmodel.model', oid, b_mat))
-                    if not plate_meshes:
-                        _, verts, tris = parse_xml_object(z.read('3D/3dmodel.model'), None)
-                        if verts and tris:
-                            plate_meshes.append(trimesh.Trimesh(vertices=np.array(verts), faces=np.array(tris)))
+                for target_oid, mat in jobs:
+                    raw_tuple = None
+                    if target_oid in extracted:
+                        raw_tuple = extracted[target_oid]
+                    elif extract_all and extracted:
+                        raw_tuple = next(iter(extracted.values()))
 
-            if not plate_meshes:
+                    if raw_tuple:
+                        raw_v, raw_t = raw_tuple
+                        rot = mat[:3, :3]
+                        trans = mat[:3, 3]
+                        trans_v = (raw_v @ rot.T) + trans
+
+                        all_verts.append(trans_v)
+                        all_faces.append(raw_t + vertex_offset)
+                        vertex_offset += len(trans_v)
+
+            if not all_verts:
                 raise HTTPException(
                     status_code=404, 
                     detail=f"Malha 3D isolada não disponível para a mesa {plate_num}."
                 )
 
-            combined = trimesh.util.concatenate(plate_meshes)
-            glb_data = combined.export(file_type='glb')
-            with open(plate_glb_path, 'wb') as f:
+            final_verts = np.vstack(all_verts)
+            final_faces = np.vstack(all_faces)
+
+            # Exportação rápida com process=False para serialização direta em GLB
+            mesh = trimesh.Trimesh(vertices=final_verts, faces=final_faces, process=False)
+            glb_data = mesh.export(file_type='glb')
+
+            tmp_path = plate_glb_path.with_suffix('.tmp')
+            with open(tmp_path, 'wb') as f:
                 f.write(glb_data)
+            tmp_path.replace(plate_glb_path)
 
-            # Manter cache sob o teto estrito de 500 MB (LRU)
             clean_preview_cache(MAX_PREVIEWS_CACHE_BYTES)
-
             return plate_glb_path
 
     try:
