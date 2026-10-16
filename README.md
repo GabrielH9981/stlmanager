@@ -44,34 +44,37 @@ O projeto é 100% conteinerizado e compatível tanto com **Windows (Docker Deskt
 
 ### 💻 No Windows
 
-1. **Abra o terminal (PowerShell ou Prompt de Comando)** na pasta do projeto:
-   ```powershell
-   git clone <URL_DO_REPOSITORIO>
-   cd STLManager
+Você tem duas maneiras simples de rodar no Windows:
+
+#### Opção A: Execução Nativa com 2 Cliques (Recomendado se não puder usar Docker/Virtualização)
+*Não requer Docker nem ativação de virtualização na BIOS.*
+
+1. Tenha o [Python 3.11 ou 3.12](https://www.python.org/downloads/) instalado no Windows (lembrando de marcar a opção **"Add python.exe to PATH"** na tela de instalação).
+2. Dê um **duplo clique no arquivo `iniciar_windows.bat`**.
+3. O script criará o ambiente `.venv`, instalará as dependências na primeira vez e abrirá o navegador automaticamente em [http://localhost:8000](http://localhost:8000)!
+4. Para apontar para sua pasta de modelos (ou pasta do Google Drive), edite o arquivo `.env` com o Bloco de Notas:
+   ```env
+   STL_LIBRARY_PATH=C:/Users/SeuUsuario/Downloads
+   # Ou pasta do Google Drive:
+   # STL_LIBRARY_PATH=G:/Meu Drive/Modelos3D
    ```
 
-2. **Crie o seu arquivo de configuração `.env`:**
+#### Opção B: Via Docker Desktop
+*Requer Docker Desktop instalado com virtualização ativada.*
+
+1. Abra o PowerShell na pasta do projeto e copie o `.env`:
    ```powershell
    copy .env.example .env
    ```
-
-3. **Edite o `.env`** com o caminho da sua pasta de arquivos 3D no Windows.  
-   > ⚠️ **Importante no Windows:** Use barras normais `/` no caminho:
+2. Edite o `.env` com o caminho da sua pasta no Windows (use barras `/`):
    ```env
-   # Exemplo com Downloads:
    STL_LIBRARY_PATH=C:/Users/SeuUsuario/Downloads
-
-   # Ou um HD secundário / pasta de modelos:
-   # STL_LIBRARY_PATH=D:/Modelos3D
    ```
-
-4. **Inicie o STLManager:**
+3. Suba o container:
    ```powershell
    docker compose up -d
    ```
-
-5. **Acesse no seu navegador:**
-   👉 [http://localhost:8000](http://localhost:8000)
+4. Acesse: [http://localhost:8000](http://localhost:8000)
 
 ---
 

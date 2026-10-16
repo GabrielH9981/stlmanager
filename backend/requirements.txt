@@ -11,3 +11,4 @@ networkx>=3.0.0
 lxml>=5.0.0
 aiofiles>=24.1.0
 python-multipart>=0.0.12
+python-dotenv>=1.0.0
