@@ -1,0 +1,19 @@
+services:
+  stlmanager:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: stlmanager
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./backend/app:/app/app
+      - ${STL_LIBRARY_PATH:-./data/library}:/library:ro
+    environment:
+      - DATA_DIR=/app/data
+      - LIBRARY_PATH=/library
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/stlmanager.db
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
+

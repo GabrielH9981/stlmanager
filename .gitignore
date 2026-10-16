@@ -1,0 +1,31 @@
+# Ambientes virtuais Python
+.venv/
+venv/
+env/
+ENV/
+
+# Caches e compilações Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# IDEs e Editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Variáveis de ambiente sensíveis (usar .env.example como modelo)
+.env
+
+# Dados e banco local do STLManager
+data/stlmanager.db
+data/stlmanager.db-journal
+data/previews/*
+!data/previews/.gitkeep
+data/thumbnails/*
+!data/thumbnails/.gitkeep
