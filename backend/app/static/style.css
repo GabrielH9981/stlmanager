@@ -34,6 +34,25 @@
     box-sizing: border-box;
     margin: 0;
     padding: 0;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(99, 102, 241, 0.45) rgba(15, 23, 42, 0.6);
+}
+
+/* Custom sleek dark scrollbar for all browsers / Windows */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.6);
+    border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(99, 102, 241, 0.4);
+    border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(99, 102, 241, 0.75);
 }
 
 body {
@@ -1486,21 +1505,104 @@ body {
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
 }
 
-/* Folder Chips Strip */
+/* Folder Breadcrumb Navigation Bar */
+.folder-breadcrumb-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: var(--radius-md);
+    font-size: 0.84rem;
+}
+
+.breadcrumb-trail {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.breadcrumb-item {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+.breadcrumb-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
+.breadcrumb-item.active {
+    color: var(--cyan);
+    font-weight: 600;
+    background: rgba(6, 182, 212, 0.1);
+}
+
+.breadcrumb-separator {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    user-select: none;
+}
+
+.btn-clear-folder {
+    background: rgba(244, 63, 94, 0.12);
+    border: 1px solid rgba(244, 63, 94, 0.3);
+    color: #FDA4AF;
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.76rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.btn-clear-folder:hover {
+    background: rgba(244, 63, 94, 0.25);
+    border-color: var(--rose);
+    color: white;
+}
+
+.btn-clear-folder svg {
+    width: 12px;
+    height: 12px;
+}
+
+/* Root Folders Scroll Strip */
+.folders-scroll-wrap {
+    position: relative;
+    width: 100%;
+}
+
 .folders-scroll {
     display: flex;
     gap: 8px;
     overflow-x: auto;
-    scrollbar-width: thin;
-    padding-bottom: 4px;
+    padding: 2px 2px 8px 2px;
 }
 
 .folder-chip {
     background: rgba(22, 32, 50, 0.7);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-    padding: 6px 12px;
-    font-size: 0.82rem;
+    padding: 7px 14px;
+    font-size: 0.84rem;
     font-weight: 500;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1515,57 +1617,144 @@ body {
     background: rgba(30, 41, 59, 0.9);
     border-color: rgba(6, 182, 212, 0.4);
     color: var(--text-primary);
+    transform: translateY(-1px);
 }
 
 .folder-chip.active {
     background: rgba(6, 182, 212, 0.15);
     border-color: var(--cyan);
     color: #67E8F9;
-    box-shadow: 0 0 10px rgba(6, 182, 212, 0.25);
+    box-shadow: 0 0 12px rgba(6, 182, 212, 0.25);
 }
 
 .chip-count {
-    background: rgba(0, 0, 0, 0.3);
-    padding: 1px 6px;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 2px 7px;
     border-radius: 999px;
     font-size: 0.72rem;
     font-weight: 600;
-}
-
-.subfolders-scroll {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    padding-left: 12px;
-    border-left: 2px solid rgba(6, 182, 212, 0.4);
-    margin-top: 4px;
-}
-
-.subfolder-chip {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px dashed var(--border-color);
-    border-radius: var(--radius-sm);
-    padding: 4px 10px;
-    font-size: 0.76rem;
     color: var(--text-muted);
-    cursor: pointer;
+}
+
+.folder-chip.active .chip-count {
+    background: rgba(6, 182, 212, 0.3);
+    color: #E0F2FE;
+}
+
+/* Subfolders Panel (Responsive Wrapped Layout) */
+.subfolders-panel {
+    background: rgba(15, 23, 42, 0.65);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    animation: fadeIn 0.2s ease;
+}
+
+.subfolders-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.subfolders-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.subfolders-panel-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--cyan);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.subfolders-count-badge {
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan);
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.subfolder-search-wrap {
     display: flex;
     align-items: center;
     gap: 6px;
-    white-space: nowrap;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+}
+
+.subfolder-search-wrap svg {
+    width: 13px;
+    height: 13px;
+    color: var(--text-muted);
+}
+
+.subfolder-search-wrap input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    width: 140px;
+}
+
+.subfolder-search-wrap input::placeholder {
+    color: var(--text-muted);
+}
+
+.subfolders-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.subfolder-chip {
+    background: rgba(22, 32, 50, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-sm);
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     transition: all 0.15s ease;
+    user-select: none;
 }
 
 .subfolder-chip:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(30, 41, 59, 0.95);
+    border-color: rgba(99, 102, 241, 0.4);
     color: var(--text-primary);
+    transform: translateY(-1px);
 }
 
 .subfolder-chip.active {
-    background: rgba(99, 102, 241, 0.2);
+    background: rgba(99, 102, 241, 0.25);
     border-color: var(--primary);
-    border-style: solid;
-    color: #C7D2FE;
+    color: #E0E7FF;
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+    font-weight: 600;
+}
+
+.subfolder-chip.active .chip-count {
+    background: rgba(99, 102, 241, 0.4);
+    color: white;
 }
 
 /* ==========================================
@@ -1892,5 +2081,150 @@ body {
     height: 100% !important;
     display: block;
 }
+
+/* ==========================================
+   Bambu Studio Slicer Button Styles
+   ========================================== */
+.btn-bambu {
+    background: linear-gradient(135deg, #00AE42 0%, #008833 100%);
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 174, 66, 0.35);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-bambu:hover {
+    background: linear-gradient(135deg, #00C84C 0%, #009E3B 100%);
+    box-shadow: 0 4px 14px rgba(0, 174, 66, 0.55);
+    transform: translateY(-1px);
+}
+
+.btn-bambu:active {
+    transform: translateY(0);
+}
+
+.btn-bambu svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+.btn-overlay-bambu {
+    background: rgba(0, 174, 66, 0.85) !important;
+    color: white !important;
+    border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.btn-overlay-bambu:hover {
+    background: rgba(0, 200, 76, 0.95) !important;
+    box-shadow: 0 0 12px rgba(0, 174, 66, 0.6);
+}
+
+/* ==========================================
+   Floating Toast Notifications System
+   ========================================== */
+.toast-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+    max-width: 420px;
+    width: 100%;
+}
+
+.toast {
+    pointer-events: auto;
+    background: rgba(17, 24, 39, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    color: var(--text-primary);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 15px rgba(99, 102, 241, 0.15);
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.86rem;
+    animation: toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    transition: all 0.25s ease;
+}
+
+.toast.toast-success {
+    border-left: 4px solid #00AE42;
+}
+
+.toast.toast-error {
+    border-left: 4px solid var(--rose);
+}
+
+.toast.toast-info {
+    border-left: 4px solid var(--cyan);
+}
+
+.toast-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.toast-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.toast-title {
+    font-weight: 600;
+    font-size: 0.88rem;
+}
+
+.toast-message {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.35;
+}
+
+.toast-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 2px 4px;
+    line-height: 1;
+    transition: color 0.15s ease;
+}
+
+.toast-close:hover {
+    color: var(--text-primary);
+}
+
+@keyframes toastSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes toastFadeOut {
+    to {
+        opacity: 0;
+        transform: translateY(10px) scale(0.9);
+    }
+}
+
 
 

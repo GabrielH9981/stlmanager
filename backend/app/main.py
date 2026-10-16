@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Inicializa as tabelas do banco de dados na inicialização
     await init_db()
+
+    # Normalizar caminhos com backslash salvos anteriormente no Windows
+    try:
+        from sqlalchemy import text
+        from .database import engine
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE models SET relative_path = replace(relative_path, '\\', '/') WHERE relative_path LIKE '%\\%'"))
+    except Exception as e:
+        logger.warning(f"Aviso ao normalizar caminhos: {e}")
+
     # Inicia uma primeira varredura automática se a biblioteca existir
     if LIBRARY_PATH.exists():
         await scanner.start_scan()
@@ -131,14 +141,16 @@ async def list_models(
         stmt = stmt.where(
             func.lower(ModelItem.filename).like(search_fmt) |
             func.lower(ModelItem.tags).like(search_fmt) |
-            func.lower(ModelItem.relative_path).like(search_fmt)
+            func.lower(func.replace(ModelItem.relative_path, '\\', '/')).like(search_fmt) |
+            func.lower(func.replace(ModelItem.filepath, '\\', '/')).like(search_fmt)
         )
 
     if category:
         stmt = stmt.where(ModelItem.category == category)
 
     if folder:
-        stmt = stmt.where(ModelItem.relative_path.ilike(f"%{folder}%"))
+        norm_folder = folder.replace('\\', '/').strip('/').lower()
+        stmt = stmt.where(func.lower(func.replace(ModelItem.relative_path, '\\', '/')).like(f"%{norm_folder}%"))
 
     if status == "project":
         stmt = stmt.where(ModelItem.file_extension == ".3mf")
@@ -503,12 +515,111 @@ async def list_folders(db: AsyncSession = Depends(get_db)):
     return build_folder_tree(models)
 
 @app.get("/api/projects")
-async def list_projects(db: AsyncSession = Depends(get_db)):
+async def list_projects(
+    folder: Optional[str] = Query(None, description="Filtra por caminho da pasta"),
+    search: Optional[str] = Query(None, description="Filtra por nome, tags ou caminho"),
+    status: Optional[str] = Query(None, description="Filtra por status: solid, non_solid, project"),
+    db: AsyncSession = Depends(get_db)
+):
     from .folders import build_projects_list
     stmt = select(ModelItem)
+
+    if folder:
+        norm_folder = folder.replace('\\', '/').strip('/').lower()
+        stmt = stmt.where(func.lower(func.replace(ModelItem.relative_path, '\\', '/')).like(f"%{norm_folder}%"))
+
+    if search:
+        search_fmt = f"%{search.strip().lower()}%"
+        stmt = stmt.where(
+            func.lower(ModelItem.filename).like(search_fmt) |
+            func.lower(ModelItem.tags).like(search_fmt) |
+            func.lower(func.replace(ModelItem.relative_path, '\\', '/')).like(search_fmt) |
+            func.lower(func.replace(ModelItem.filepath, '\\', '/')).like(search_fmt)
+        )
+
+    if status == "project":
+        stmt = stmt.where(ModelItem.file_extension == ".3mf")
+    elif status == "solid":
+        stmt = stmt.where(ModelItem.is_watertight == True, ModelItem.file_extension != ".3mf")
+    elif status == "non_solid":
+        stmt = stmt.where(ModelItem.is_watertight == False, ModelItem.file_extension != ".3mf")
+
     res = await db.execute(stmt)
     models = res.scalars().all()
     return build_projects_list(models)
+
+class OpenProjectSchema(BaseModel):
+    project_id: str
+    slicer: Optional[str] = "bambu"
+
+@app.post("/api/models/{model_id}/open")
+async def open_model_in_slicer(
+    model_id: int, 
+    slicer: str = Query("bambu", description="Fatiador: bambu, orca, cura, default"), 
+    db: AsyncSession = Depends(get_db)
+):
+    from .slicer import open_files_in_slicer
+    stmt = select(ModelItem).where(ModelItem.id == model_id)
+    res = await db.execute(stmt)
+    item = res.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado.")
+    
+    result = open_files_in_slicer([item.filepath], slicer_name=slicer)
+    return result
+
+@app.post("/api/models/{model_id}/open-folder")
+async def open_model_folder(model_id: int, db: AsyncSession = Depends(get_db)):
+    from .slicer import open_folder_in_explorer
+    stmt = select(ModelItem).where(ModelItem.id == model_id)
+    res = await db.execute(stmt)
+    item = res.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado.")
+    
+    result = open_folder_in_explorer(item.filepath)
+    return result
+
+@app.post("/api/projects/open")
+async def open_project_in_slicer(payload: OpenProjectSchema, db: AsyncSession = Depends(get_db)):
+    from .slicer import open_files_in_slicer
+    project_id = payload.project_id
+    slicer = payload.slicer or "bambu"
+
+    if project_id.startswith("file:"):
+        model_id = int(project_id.split(":", 1)[1])
+        stmt = select(ModelItem).where(ModelItem.id == model_id)
+        res = await db.execute(stmt)
+        item = res.scalar_one_or_none()
+        if not item:
+            raise HTTPException(status_code=404, detail="Arquivo do projeto não encontrado.")
+        return open_files_in_slicer([item.filepath], slicer_name=slicer)
+
+    elif project_id.startswith("folder:"):
+        folder_path = project_id.split(":", 1)[1]
+        norm_folder = folder_path.replace('\\', '/').strip('/').lower()
+        stmt = select(ModelItem).where(
+            func.lower(func.replace(ModelItem.relative_path, '\\', '/')).like(f"%{norm_folder}%")
+        )
+        res = await db.execute(stmt)
+        items = res.scalars().all()
+        if not items:
+            raise HTTPException(status_code=404, detail="Nenhum arquivo encontrado para este projeto.")
+        
+        filepaths = [i.filepath for i in items]
+        return open_files_in_slicer(filepaths, slicer_name=slicer)
+
+    elif project_id.startswith("single:"):
+        model_id = int(project_id.split(":", 1)[1])
+        stmt = select(ModelItem).where(ModelItem.id == model_id)
+        res = await db.execute(stmt)
+        item = res.scalar_one_or_none()
+        if not item:
+            raise HTTPException(status_code=404, detail="Modelo não encontrado.")
+        return open_files_in_slicer([item.filepath], slicer_name=slicer)
+
+    else:
+        raise HTTPException(status_code=400, detail="Formato de project_id inválido.")
 
 @app.get("/api/models/{model_id}/plates/{plate_num}/mesh.glb")
 async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = Depends(get_db)):

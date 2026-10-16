@@ -245,9 +245,9 @@ class ScannerManager:
         file_mtime = stat.st_mtime
         
         try:
-            relative_path = str(path_obj.relative_to(root_dir))
+            relative_path = str(path_obj.relative_to(root_dir)).replace('\\', '/')
         except ValueError:
-            relative_path = path_obj.name
+            relative_path = path_obj.name.replace('\\', '/')
 
         # Verifica se já existe pelo caminho
         stmt = select(ModelItem).where(ModelItem.filepath == filepath_str)

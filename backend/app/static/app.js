@@ -144,9 +144,22 @@ const statTotalSize = document.getElementById('statTotalSize');
 // Folders & View Mode Toggle
 const btnViewModeProjects = document.getElementById('btnViewModeProjects');
 const btnViewModeFiles = document.getElementById('btnViewModeFiles');
+const folderBreadcrumbBar = document.getElementById('folderBreadcrumbBar');
+const breadcrumbTrail = document.getElementById('breadcrumbTrail');
+const btnClearFolderFilter = document.getElementById('btnClearFolderFilter');
 const foldersBar = document.getElementById('foldersBar');
+const subfoldersPanel = document.getElementById('subfoldersPanel');
+const subfoldersPanelTitle = document.getElementById('subfoldersPanelTitle');
+const subfoldersCountBadge = document.getElementById('subfoldersCountBadge');
+const subfolderSearchInput = document.getElementById('subfolderSearchInput');
 const subfoldersBar = document.getElementById('subfoldersBar');
 const countAllFolders = document.getElementById('countAllFolders');
+
+const modalOpenBambuBtn = document.getElementById('modalOpenBambuBtn');
+const projectOpenBambuBtn = document.getElementById('projectOpenBambuBtn');
+const projectOpenFolderBtn = document.getElementById('projectOpenFolderBtn');
+const btnProjectOpenBambuPart = document.getElementById('btnProjectOpenBambuPart');
+const toastContainer = document.getElementById('toastContainer');
 
 // Status Filter Pills & Toggles
 const statusFilterPills = document.getElementById('statusFilterPills');
@@ -659,6 +672,45 @@ function setupEventListeners() {
     });
 
     btnProjectResetCam.addEventListener('click', resetProjCamera);
+
+    // Slicer & Windows Explorer Launch Handlers
+    if (modalOpenBambuBtn) {
+        modalOpenBambuBtn.addEventListener('click', () => {
+            if (state.activeModel) {
+                openInBambuStudio(state.activeModel.id, state.activeModel.filename);
+            }
+        });
+    }
+
+    if (projectOpenBambuBtn) {
+        projectOpenBambuBtn.addEventListener('click', () => {
+            if (state.activeProject) {
+                openProjectInBambu(state.activeProject.id, state.activeProject.title);
+            }
+        });
+    }
+
+    if (projectOpenFolderBtn) {
+        projectOpenFolderBtn.addEventListener('click', () => {
+            if (state.activeProject && state.activeProject.parts && state.activeProject.parts.length > 0) {
+                openModelFolder(state.activeProject.parts[0].id);
+            }
+        });
+    }
+
+    if (btnProjectOpenBambuPart) {
+        btnProjectOpenBambuPart.addEventListener('click', () => {
+            if (state.activeProjectPart) {
+                openInBambuStudio(state.activeProjectPart.id, state.activeProjectPart.filename);
+            }
+        });
+    }
+
+    if (btnClearFolderFilter) {
+        btnClearFolderFilter.addEventListener('click', () => {
+            clearFolderFilter();
+        });
+    }
 }
 
 
@@ -713,19 +765,172 @@ async function fetchFolders() {
     }
 }
 
+// ==========================================
+// Toast Notifications & Slicer Handlers
+// ==========================================
+function showToast(title, message, type = 'info', duration = 4000) {
+    if (!toastContainer) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    
+    const icon = type === 'success' ? '🚀' : type === 'error' ? '⚠️' : 'ℹ️';
+    
+    toast.innerHTML = `
+        <span class="toast-icon">${icon}</span>
+        <div class="toast-content">
+            <span class="toast-title">${title}</span>
+            <span class="toast-message">${message}</span>
+        </div>
+        <button class="toast-close">&times;</button>
+    `;
+
+    toast.querySelector('.toast-close').onclick = () => {
+        toast.style.animation = 'toastFadeOut 0.2s forwards';
+        setTimeout(() => toast.remove(), 200);
+    };
+
+    toastContainer.appendChild(toast);
+
+    if (duration > 0) {
+        setTimeout(() => {
+            if (toast.parentElement) {
+                toast.style.animation = 'toastFadeOut 0.25s forwards';
+                setTimeout(() => toast.remove(), 250);
+            }
+        }, duration);
+    }
+}
+
+async function openInBambuStudio(modelId, filename = '') {
+    showToast('Bambu Studio', `Enviando "${filename || 'modelo'}" para o Bambu Studio...`, 'info', 3000);
+    try {
+        const res = await fetch(`/api/models/${modelId}/open?slicer=bambu`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Bambu Studio', data.message || 'Arquivo aberto com sucesso!', 'success', 4000);
+        } else {
+            showToast('Aviso do Fatiador', data.message || 'Não foi possível iniciar o Bambu Studio.', 'error', 6000);
+        }
+    } catch (err) {
+        showToast('Erro ao Abrir', `Falha de comunicação: ${err.message}`, 'error', 5000);
+    }
+}
+
+async function openProjectInBambu(projectId, title = '') {
+    showToast('Bambu Studio', `Enviando projeto "${title || ''}" para o Bambu Studio...`, 'info', 3000);
+    try {
+        const res = await fetch('/api/projects/open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_id: projectId, slicer: 'bambu' })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Bambu Studio', data.message || 'Projeto aberto com sucesso!', 'success', 4000);
+        } else {
+            showToast('Aviso do Fatiador', data.message || 'Não foi possível abrir o projeto.', 'error', 6000);
+        }
+    } catch (err) {
+        showToast('Erro ao Abrir', `Falha de comunicação: ${err.message}`, 'error', 5000);
+    }
+}
+
+async function openModelFolder(modelId) {
+    try {
+        const res = await fetch(`/api/models/${modelId}/open-folder`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Windows Explorer', data.message || 'Pasta aberta no Windows.', 'success', 3000);
+        } else {
+            showToast('Explorer', data.message || 'Não foi possível abrir a pasta.', 'error', 4000);
+        }
+    } catch (err) {
+        showToast('Erro Explorer', err.message, 'error', 4000);
+    }
+}
+
+// ==========================================
+// Breadcrumb Navigation & Folder Management
+// ==========================================
+function renderBreadcrumbs() {
+    if (!breadcrumbTrail) return;
+    breadcrumbTrail.innerHTML = '';
+
+    // Item 1: Início
+    const rootBtn = document.createElement('button');
+    rootBtn.className = `breadcrumb-item ${!state.activeFolder && !state.activeSubfolder ? 'active' : ''}`;
+    rootBtn.innerHTML = `🏠 Início`;
+    rootBtn.onclick = () => {
+        clearFolderFilter();
+    };
+    breadcrumbTrail.appendChild(rootBtn);
+
+    if (state.activeFolder) {
+        const sep1 = document.createElement('span');
+        sep1.className = 'breadcrumb-separator';
+        sep1.textContent = '›';
+        breadcrumbTrail.appendChild(sep1);
+
+        const folderBtn = document.createElement('button');
+        folderBtn.className = `breadcrumb-item ${!state.activeSubfolder ? 'active' : ''}`;
+        folderBtn.innerHTML = `📁 ${state.activeFolder}`;
+        folderBtn.onclick = () => {
+            state.activeSubfolder = '';
+            const rootObj = state.foldersData.find(f => f.path === state.activeFolder);
+            if (rootObj && rootObj.subfolders && rootObj.subfolders.length > 0) {
+                renderSubfoldersPanel(rootObj);
+            }
+            renderBreadcrumbs();
+            refreshView();
+        };
+        breadcrumbTrail.appendChild(folderBtn);
+    }
+
+    if (state.activeSubfolder) {
+        let subDisplayName = state.activeSubfolder;
+        if (state.activeFolder && subDisplayName.startsWith(state.activeFolder)) {
+            subDisplayName = subDisplayName.slice(state.activeFolder.length).replace(/^[/\\]+/, '');
+        }
+
+        const sep2 = document.createElement('span');
+        sep2.className = 'breadcrumb-separator';
+        sep2.textContent = '›';
+        breadcrumbTrail.appendChild(sep2);
+
+        const subBtn = document.createElement('button');
+        subBtn.className = 'breadcrumb-item active';
+        subBtn.innerHTML = `📂 ${subDisplayName}`;
+        breadcrumbTrail.appendChild(subBtn);
+    }
+
+    if (btnClearFolderFilter) {
+        if (state.activeFolder || state.activeSubfolder) {
+            btnClearFolderFilter.style.display = 'inline-flex';
+        } else {
+            btnClearFolderFilter.style.display = 'none';
+        }
+    }
+}
+
+function clearFolderFilter() {
+    state.activeFolder = '';
+    state.activeSubfolder = '';
+    foldersBar.querySelectorAll('.folder-chip').forEach(c => c.classList.remove('active'));
+    const rootChip = foldersBar.querySelector('.folder-chip[data-folder=""]');
+    if (rootChip) rootChip.classList.add('active');
+    if (subfoldersPanel) subfoldersPanel.style.display = 'none';
+    if (subfolderSearchInput) subfolderSearchInput.value = '';
+    renderBreadcrumbs();
+    refreshView();
+}
+
 function renderFoldersBar(folders) {
-    // Preservar botão "Todas as Pastas"
     const rootChip = foldersBar.querySelector('.folder-chip[data-folder=""]');
     foldersBar.innerHTML = '';
     foldersBar.appendChild(rootChip);
 
     rootChip.onclick = () => {
-        foldersBar.querySelectorAll('.folder-chip').forEach(c => c.classList.remove('active'));
-        rootChip.classList.add('active');
-        state.activeFolder = '';
-        state.activeSubfolder = '';
-        subfoldersBar.style.display = 'none';
-        refreshView();
+        clearFolderFilter();
     };
 
     folders.forEach(root => {
@@ -744,52 +949,96 @@ function renderFoldersBar(folders) {
             chip.classList.add('active');
             state.activeFolder = root.path;
             state.activeSubfolder = '';
+            if (subfolderSearchInput) subfolderSearchInput.value = '';
 
-            // Se possui subpastas, exibir a barra secundária
             if (root.subfolders && root.subfolders.length > 0) {
-                renderSubfoldersBar(root);
-            } else {
-                subfoldersBar.style.display = 'none';
+                renderSubfoldersPanel(root);
+            } else if (subfoldersPanel) {
+                subfoldersPanel.style.display = 'none';
             }
 
+            renderBreadcrumbs();
             refreshView();
         });
 
         foldersBar.appendChild(chip);
     });
+
+    renderBreadcrumbs();
 }
 
-function renderSubfoldersBar(rootFolder) {
-    subfoldersBar.innerHTML = '';
-    subfoldersBar.style.display = 'flex';
+function renderSubfoldersPanel(rootFolder) {
+    if (!subfoldersPanel || !subfoldersBar) return;
 
-    // Chip "Todas em X"
-    const allSubChip = document.createElement('button');
-    allSubChip.className = `folder-chip subfolder-chip ${!state.activeSubfolder ? 'active' : ''}`;
-    allSubChip.innerHTML = `<span>Tudo em ${rootFolder.name}</span>`;
-    allSubChip.onclick = () => {
-        subfoldersBar.querySelectorAll('.subfolder-chip').forEach(c => c.classList.remove('active'));
-        allSubChip.classList.add('active');
-        state.activeSubfolder = '';
-        refreshView();
-    };
-    subfoldersBar.appendChild(allSubChip);
+    if (!rootFolder || !rootFolder.subfolders || rootFolder.subfolders.length === 0) {
+        subfoldersPanel.style.display = 'none';
+        return;
+    }
 
-    rootFolder.subfolders.forEach(sub => {
-        const subChip = document.createElement('button');
-        subChip.className = `folder-chip subfolder-chip ${state.activeSubfolder === sub.path ? 'active' : ''}`;
-        subChip.innerHTML = `
-            <span>📂 ${sub.name}</span>
-            <span class="chip-count">${sub.count}</span>
+    subfoldersPanel.style.display = 'flex';
+    if (subfoldersPanelTitle) subfoldersPanelTitle.textContent = `Subpastas em ${rootFolder.name}`;
+    if (subfoldersCountBadge) subfoldersCountBadge.textContent = rootFolder.subfolders.length;
+
+    const drawChips = (filterText = '') => {
+        subfoldersBar.innerHTML = '';
+
+        // Chip "Tudo em X"
+        const allSubChip = document.createElement('button');
+        allSubChip.className = `subfolder-chip ${!state.activeSubfolder ? 'active' : ''}`;
+        allSubChip.innerHTML = `
+            <span>✨ Tudo em ${rootFolder.name}</span>
+            <span class="chip-count">${rootFolder.count}</span>
         `;
-        subChip.onclick = () => {
+        allSubChip.onclick = () => {
             subfoldersBar.querySelectorAll('.subfolder-chip').forEach(c => c.classList.remove('active'));
-            subChip.classList.add('active');
-            state.activeSubfolder = sub.path;
+            allSubChip.classList.add('active');
+            state.activeSubfolder = '';
+            renderBreadcrumbs();
             refreshView();
         };
-        subfoldersBar.appendChild(subChip);
-    });
+        subfoldersBar.appendChild(allSubChip);
+
+        const query = filterText.toLowerCase().trim();
+        const filtered = rootFolder.subfolders.filter(sub => {
+            if (!query) return true;
+            return sub.name.toLowerCase().includes(query) || sub.path.toLowerCase().includes(query);
+        });
+
+        if (filtered.length === 0) {
+            const noMatch = document.createElement('span');
+            noMatch.style.color = 'var(--text-muted)';
+            noMatch.style.fontSize = '0.8rem';
+            noMatch.style.padding = '8px';
+            noMatch.textContent = `Nenhuma subpasta encontrada para "${filterText}"`;
+            subfoldersBar.appendChild(noMatch);
+            return;
+        }
+
+        filtered.forEach(sub => {
+            const subChip = document.createElement('button');
+            subChip.className = `subfolder-chip ${state.activeSubfolder === sub.path ? 'active' : ''}`;
+            subChip.innerHTML = `
+                <span>📂 ${sub.name}</span>
+                <span class="chip-count">${sub.count}</span>
+            `;
+            subChip.onclick = () => {
+                subfoldersBar.querySelectorAll('.subfolder-chip').forEach(c => c.classList.remove('active'));
+                subChip.classList.add('active');
+                state.activeSubfolder = sub.path;
+                renderBreadcrumbs();
+                refreshView();
+            };
+            subfoldersBar.appendChild(subChip);
+        });
+    };
+
+    drawChips(subfolderSearchInput ? subfolderSearchInput.value : '');
+
+    if (subfolderSearchInput) {
+        subfolderSearchInput.oninput = (e) => {
+            drawChips(e.target.value);
+        };
+    }
 }
 
 
@@ -908,10 +1157,14 @@ function renderFolderProjectCard(proj) {
                 </div>
             </div>
 
-            <div class="card-actions">
-                <button class="btn btn-primary btn-sm btn-open-project" style="width: 100%;">
+            <div class="card-actions" style="display: grid; grid-template-columns: 1fr auto; gap: 8px;">
+                <button class="btn btn-primary btn-sm btn-open-project">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                    <span>Abrir Projeto (${proj.parts_count} peças)</span>
+                    <span>Abrir Projeto</span>
+                </button>
+                <button class="btn btn-bambu btn-sm btn-proj-bambu" title="Abrir todas as peças no Bambu Studio">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                    <span>Bambu</span>
                 </button>
             </div>
         </div>
@@ -919,6 +1172,13 @@ function renderFolderProjectCard(proj) {
 
     card.querySelector('.card-preview-area').addEventListener('click', () => openProjectModal(proj));
     card.querySelector('.btn-open-project').addEventListener('click', () => openProjectModal(proj));
+    const btnProjBambu = card.querySelector('.btn-proj-bambu');
+    if (btnProjBambu) {
+        btnProjBambu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openProjectInBambu(proj.id, proj.title);
+        });
+    }
 
     modelsGrid.appendChild(card);
 }
@@ -968,10 +1228,14 @@ function render3MFProjectCard(proj) {
                 </div>
             </div>
 
-            <div class="card-actions">
-                <button class="btn btn-primary btn-sm btn-open-3d" style="width: 100%;">
+            <div class="card-actions" style="display: grid; grid-template-columns: 1fr auto; gap: 8px;">
+                <button class="btn btn-primary btn-sm btn-open-3d">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-                    <span>Inspecionar Mesas e 3D</span>
+                    <span>Ver Mesas/3D</span>
+                </button>
+                <button class="btn btn-bambu btn-sm btn-3mf-bambu" title="Abrir projeto no Bambu Studio">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                    <span>Bambu</span>
                 </button>
             </div>
         </div>
@@ -980,6 +1244,17 @@ function render3MFProjectCard(proj) {
     if (model) {
         card.querySelector('.card-preview-area').addEventListener('click', () => openViewer(model));
         card.querySelector('.btn-open-3d').addEventListener('click', () => openViewer(model));
+    }
+    const btn3mfBambu = card.querySelector('.btn-3mf-bambu');
+    if (btn3mfBambu) {
+        btn3mfBambu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (model) {
+                openInBambuStudio(model.id, proj.title);
+            } else {
+                openProjectInBambu(proj.id, proj.title);
+            }
+        });
     }
 
     modelsGrid.appendChild(card);
@@ -1110,17 +1385,29 @@ function renderSingleModelCard(model) {
                 </div>
             </div>
 
-            <div class="card-actions">
+            <div class="card-actions" style="display: grid; grid-template-columns: 1fr auto auto; gap: 6px;">
                 <button class="btn btn-primary btn-sm btn-open-3d">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                    <span>Visualizar 3D</span>
+                    <span>3D</span>
                 </button>
-                <a href="/api/models/${model.id}/file" download="${model.filename}" class="btn btn-secondary btn-sm" title="Baixar / Abrir no Fatiador">
+                <button class="btn btn-bambu btn-sm btn-open-bambu" title="Abrir direto no Bambu Studio">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                    <span>Bambu</span>
+                </button>
+                <a href="/api/models/${model.id}/file" download="${model.filename}" class="btn btn-secondary btn-sm" title="Baixar Arquivo">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                 </a>
             </div>
         </div>
     `;
+
+    const btnBambu = card.querySelector('.btn-open-bambu');
+    if (btnBambu) {
+        btnBambu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openInBambuStudio(model.id, model.filename);
+        });
+    }
 
     // Queue thumbnail generation if not cached
     if (!model.has_thumbnail) {
@@ -1227,6 +1514,7 @@ function openProjectModal(project) {
 }
 
 async function selectProjectPart(part) {
+    state.activeProjectPart = part;
     projectActivePartName.textContent = part.filename;
     projectPartMetrics.innerHTML = `
         <span style="color: var(--text-muted); font-size: 0.78rem;">${part.dimensions ? `${part.dimensions.x}×${part.dimensions.y}×${part.dimensions.z} mm` : ''} • ${part.file_size_mb} MB</span>

@@ -154,16 +154,41 @@
                     </div>
                 </div>
 
-                <!-- Main Folders Strip -->
-                <div class="folders-scroll" id="foldersBar">
-                    <button class="folder-chip active" data-folder="">
-                        <span>📁 Todas as Pastas</span>
-                        <span class="chip-count" id="countAllFolders">0</span>
+                <!-- Breadcrumb Navigation Bar -->
+                <div class="folder-breadcrumb-bar" id="folderBreadcrumbBar">
+                    <div class="breadcrumb-trail" id="breadcrumbTrail">
+                        <button class="breadcrumb-item active" data-path="">🏠 Início (Todas as Pastas)</button>
+                    </div>
+                    <button id="btnClearFolderFilter" class="btn-clear-folder" style="display: none;" title="Limpar filtro de pasta">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        <span>Limpar Pasta</span>
                     </button>
                 </div>
 
-                <!-- Subfolders Strip (Shows when a folder with subfolders is active) -->
-                <div class="subfolders-scroll" id="subfoldersBar" style="display: none;"></div>
+                <!-- Main Folders Strip -->
+                <div class="folders-scroll-wrap">
+                    <div class="folders-scroll" id="foldersBar">
+                        <button class="folder-chip active" data-folder="">
+                            <span>📁 Todas as Pastas</span>
+                            <span class="chip-count" id="countAllFolders">0</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Subfolders Panel (Responsive Wrapped Grid with Search) -->
+                <div class="subfolders-panel" id="subfoldersPanel" style="display: none;">
+                    <div class="subfolders-panel-header">
+                        <div class="subfolders-title-wrap">
+                            <span class="subfolders-panel-title" id="subfoldersPanelTitle">Subpastas</span>
+                            <span class="subfolders-count-badge" id="subfoldersCountBadge">0</span>
+                        </div>
+                        <div class="subfolder-search-wrap">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            <input type="text" id="subfolderSearchInput" placeholder="Filtrar subpastas..." autocomplete="off">
+                        </div>
+                    </div>
+                    <div class="subfolders-grid" id="subfoldersBar"></div>
+                </div>
             </section>
 
             <!-- Filters & Controls Bar -->
@@ -236,9 +261,13 @@
                     </button>
                 </div>
                 <div class="modal-actions">
+                    <button id="modalOpenBambuBtn" class="btn btn-bambu btn-sm" title="Abrir diretamente no Bambu Studio">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                        <span>Abrir no Bambu Studio</span>
+                    </button>
                     <a id="modalDownloadBtn" class="btn btn-secondary btn-sm" download>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                        <span>Baixar / Fatiador</span>
+                        <span>Baixar</span>
                     </a>
                     <button id="modalCloseBtn" class="btn-close">&times;</button>
                 </div>
@@ -403,6 +432,14 @@
                     </div>
                 </div>
                 <div class="modal-actions">
+                    <button id="projectOpenBambuBtn" class="btn btn-bambu btn-sm" title="Abrir projeto completo no Bambu Studio">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                        <span>Abrir no Bambu Studio</span>
+                    </button>
+                    <button id="projectOpenFolderBtn" class="btn btn-secondary btn-sm" title="Abrir pasta no Windows Explorer">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                        <span>Pasta no Windows</span>
+                    </button>
                     <span id="projectPathHint" class="project-path-hint"></span>
                     <button id="projectModalCloseBtn" class="btn-close">&times;</button>
                 </div>
@@ -441,9 +478,13 @@
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
                                 <span>Resetar Câmera</span>
                             </button>
+                            <button id="btnProjectOpenBambuPart" class="overlay-btn btn-overlay-bambu" title="Abrir esta peça no Bambu Studio">
+                                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M4 3h6v8H4zm10 0h6v8h-6zM4 13h6v8H4zm10 0h6v8h-6z"/></svg>
+                                <span>Abrir no Bambu</span>
+                            </button>
                             <a id="btnDownloadActivePart" class="overlay-btn" download>
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                <span>Baixar Esta Peça</span>
+                                <span>Baixar Peça</span>
                             </a>
                         </div>
                     </div>
@@ -451,6 +492,9 @@
             </div>
         </div>
     </div>
+
+    <!-- Notification Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
 
     <!-- Debug Logs Drawer -->
     <div id="debugDrawer" class="debug-drawer" style="display: none;">
