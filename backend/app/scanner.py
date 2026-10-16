@@ -184,43 +184,91 @@ class ScannerManager:
         asyncio.create_task(self._run_scan(target_path))
         return True
 
+    @staticmethod
+    def _normalize_path(p_str: str) -> str:
+        """Normaliza o caminho para comparação agnóstica de SO (barras e case no Windows)."""
+        return p_str.replace('\\', '/').rstrip('/').lower()
+
     async def _run_scan(self, root_dir: Path):
         import gc
-        self.is_scanning = True
-        self.processed_files = 0
+        from sqlalchemy import delete
         self.errors = []
-        self.current_file = "Descobrindo arquivos..."
+        self.current_file = "Verificando acervo..."
         
         try:
-            # 1. Coletar todos os arquivos com extensões suportadas
-            found_files: List[Path] = []
+            # 1. Coleta ultrarrápida de todos os arquivos no disco com stat
+            disk_files: Dict[str, Any] = {}
             if root_dir.exists():
                 for root, _, files in os.walk(root_dir):
                     for file in files:
                         p = Path(root) / file
                         if p.suffix.lower() in SUPPORTED_EXTENSIONS:
-                            found_files.append(p)
-                            
-            self.total_files = len(found_files)
-            
-            if self.total_files == 0:
+                            try:
+                                resolved = str(p.resolve())
+                                st = p.stat()
+                                disk_files[resolved] = (p, st.st_size, st.st_mtime)
+                            except (OSError, PermissionError) as e:
+                                logger.warning(f"Não foi possível acessar {p}: {e}")
+
+            # 2. Em UMA ÚNICA consulta SQL, carrega mapa de arquivos já indexados
+            async with AsyncSessionLocal() as session:
+                stmt = select(ModelItem.id, ModelItem.filepath, ModelItem.file_mtime, ModelItem.triangles_count)
+                res = await session.execute(stmt)
+                rows = res.all()
+                
+                # Mapeia: caminho_normalizado -> (id, filepath_original, mtime, triangles_count)
+                db_records = {self._normalize_path(r[1]): (r[0], r[1], r[2], r[3]) for r in rows}
+
+                # 3. Detectar arquivos que foram apagados do disco e remover do banco
+                disk_norm_set = {self._normalize_path(k) for k in disk_files.keys()}
+                deleted_ids = [r[0] for norm_path, r in db_records.items() if norm_path not in disk_norm_set]
+                
+                if deleted_ids:
+                    logger.info(f"Removendo {len(deleted_ids)} arquivo(s) do banco de dados que foram excluídos do disco...")
+                    for i in range(0, len(deleted_ids), 500):
+                        batch = deleted_ids[i:i+500]
+                        del_stmt = delete(ModelItem).where(ModelItem.id.in_(batch))
+                        await session.execute(del_stmt)
+                    await session.commit()
+
+            # 4. Identificar na memória APENAS arquivos que são novos ou foram modificados
+            files_to_process = []
+            for filepath_str, (path_obj, file_size, file_mtime) in disk_files.items():
+                norm_p = self._normalize_path(filepath_str)
+                if norm_p in db_records:
+                    _, _, db_mtime, db_tris = db_records[norm_p]
+                    # Se já indexado, malha válida e data de modificação idêntica, PULA!
+                    if db_tris is not None and db_tris > 0 and abs((db_mtime or 0) - file_mtime) < 0.001:
+                        continue
+                files_to_process.append((path_obj, file_size, file_mtime))
+
+            # 5. Se não há alterações, encerra instantaneamente em milissegundos
+            if not files_to_process:
+                logger.info(f"✓ Acervo 100% sincronizado ({len(disk_files)} arquivos verificados em milissegundos). Nenhuma alteração detectada.")
                 self.is_scanning = False
+                self.total_files = 0
+                self.processed_files = 0
                 self.last_scan_time = datetime.utcnow()
-                self.current_file = "Nenhum arquivo 3D encontrado no diretório."
+                self.current_file = "Biblioteca atualizada (0 novos arquivos)."
                 return
 
+            # 6. Processar apenas as novidades / modificações
+            logger.info(f"Indexando {len(files_to_process)} arquivo(s) novo(s) ou alterado(s) de um total de {len(disk_files)}...")
+            self.is_scanning = True
+            self.total_files = len(files_to_process)
+            self.processed_files = 0
+
             async with AsyncSessionLocal() as session:
-                for file_path in found_files:
-                    self.current_file = file_path.name
+                for path_obj, file_size, file_mtime in files_to_process:
+                    self.current_file = path_obj.name
                     try:
-                        await self._process_single_file(session, file_path, root_dir)
+                        await self._process_single_file(session, path_obj, file_size, file_mtime, root_dir)
                     except Exception as e:
-                        logger.error(f"Erro ao indexar {file_path}: {e}")
-                        self.errors.append({"file": str(file_path), "error": str(e)})
-                    
+                        logger.error(f"Erro ao indexar {path_obj}: {e}")
+                        self.errors.append({"file": str(path_obj), "error": str(e)})
+
                     self.processed_files += 1
 
-                    # Persistir no banco a cada 8 arquivos para aparecer na tela em tempo real
                     if self.processed_files % 8 == 0:
                         await session.commit()
                         gc.collect()
@@ -229,7 +277,7 @@ class ScannerManager:
 
                 await session.commit()
                 gc.collect()
-                
+
         except Exception as e:
             logger.error(f"Erro geral durante varredura: {e}")
             self.errors.append({"file": "SCAN_ROOT", "error": str(e)})
@@ -238,11 +286,8 @@ class ScannerManager:
             self.last_scan_time = datetime.utcnow()
             self.current_file = "Varredura concluída!"
 
-    async def _process_single_file(self, session: AsyncSession, path_obj: Path, root_dir: Path):
+    async def _process_single_file(self, session: AsyncSession, path_obj: Path, file_size: int, file_mtime: float, root_dir: Path):
         filepath_str = str(path_obj.resolve())
-        stat = path_obj.stat()
-        file_size = stat.st_size
-        file_mtime = stat.st_mtime
         
         try:
             relative_path = str(path_obj.relative_to(root_dir)).replace('\\', '/')
@@ -253,10 +298,6 @@ class ScannerManager:
         stmt = select(ModelItem).where(ModelItem.filepath == filepath_str)
         result = await session.execute(stmt)
         existing_item = result.scalar_one_or_none()
-
-        # Se já existe, já tem geometria analisada (> 0 triângulos) e a data de modificação não mudou, pula
-        if existing_item and existing_item.triangles_count > 0 and abs(existing_item.file_mtime - file_mtime) < 0.001:
-            return
 
 
         # Calcular Hash SHA-256

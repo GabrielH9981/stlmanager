@@ -620,13 +620,15 @@ function setupEventListeners() {
     scanBtn.addEventListener('click', async () => {
         try {
             scanBtn.disabled = true;
+            showToast('Sincronização', 'Verificando alterações na biblioteca...', 'info', 2000);
             AppLogger.info('SCAN', 'Disparando varredura no servidor...');
             const res = await fetch('/api/scan/start', { method: 'POST' });
             const data = await res.json();
             AppLogger.info('SCAN', `Resposta do scanner: ${data.message}`);
-            startPollingScan();
+            startPollingScan(true);
         } catch (err) {
             AppLogger.error('SCAN', 'Erro ao iniciar varredura', err);
+            showToast('Erro', `Falha ao iniciar varredura: ${err.message}`, 'error', 4000);
         } finally {
             scanBtn.disabled = false;
         }
@@ -2179,11 +2181,13 @@ function closeModal() {
 // Background Scan Polling
 // ==========================================
 let lastScannedCount = 0;
+let isManualScanRequested = false;
 
-function startPollingScan() {
-    scanProgressBanner.style.display = 'flex';
+function startPollingScan(isManual = false) {
+    if (isManual) isManualScanRequested = true;
     if (state.pollInterval) clearInterval(state.pollInterval);
     state.pollInterval = setInterval(checkScanStatus, 1000);
+    checkScanStatus();
 }
 
 async function checkScanStatus() {
@@ -2196,33 +2200,34 @@ async function checkScanStatus() {
             scanProgressBar.style.width = `${status.percentage}%`;
             scanProgressPercent.textContent = `${status.percentage}%`;
             scanCurrentFile.textContent = status.current_file;
-            scanStatusTitle.textContent = `Indexando arquivos (${status.processed_files}/${status.total_files}) • Você já pode usar e explorar os modelos abaixo!`;
+            scanStatusTitle.textContent = `Indexando novos arquivos (${status.processed_files}/${status.total_files}) • Você já pode usar e explorar os modelos abaixo!`;
 
             if (!state.pollInterval) {
                 state.pollInterval = setInterval(checkScanStatus, 1000);
             }
 
-            // Atualização dinâmica em tempo real à medida que novos lotes de arquivos entram no banco
-            if (status.processed_files >= lastScannedCount + 8 || (lastScannedCount === 0 && status.processed_files > 0)) {
+            // Atualização dinâmica em tempo real à medida que novos arquivos entram no banco
+            if (status.processed_files >= lastScannedCount + 4 || (lastScannedCount === 0 && status.processed_files > 0)) {
                 lastScannedCount = status.processed_files;
                 fetchStats();
                 fetchFolders();
-                // Apenas atualiza a grade se o usuário não estiver com foco no campo de busca ou dentro de um modal 3D
                 if (document.activeElement !== searchInput && viewerModal.style.display === 'none' && projectModal.style.display === 'none') {
                     refreshView(true);
                 }
             }
         } else {
+            scanProgressBanner.style.display = 'none';
             if (state.pollInterval) {
                 clearInterval(state.pollInterval);
                 state.pollInterval = null;
-                setTimeout(() => {
-                    scanProgressBanner.style.display = 'none';
-                }, 2500);
                 AppLogger.info('SCAN', 'Varredura finalizada. Atualizando acervo...');
                 fetchStats();
                 fetchFolders();
                 refreshView(false);
+                if (isManualScanRequested) {
+                    isManualScanRequested = false;
+                    showToast('Acervo Sincronizado', 'Biblioteca 100% atualizada.', 'success', 3000);
+                }
             }
         }
     } catch (err) {
