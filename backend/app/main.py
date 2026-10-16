@@ -34,6 +34,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Aviso ao normalizar caminhos: {e}")
 
+    # Limpar caches de GLBs de mesas anteriores para evitar mistura de modelos
+    try:
+        for p in PREVIEWS_DIR.glob("*_plate_*.glb"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Aviso ao limpar cache de mesas: {e}")
+
     # Inicia uma primeira varredura automática se a biblioteca existir
     if LIBRARY_PATH.exists():
         await scanner.start_scan()
@@ -638,7 +648,11 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
 
     plate_glb_path = PREVIEWS_DIR / f"{item.file_hash}_plate_{plate_num}.glb"
     if plate_glb_path.exists():
-        return FileResponse(path=str(plate_glb_path), media_type="model/gltf-binary")
+        return FileResponse(
+            path=str(plate_glb_path),
+            media_type="model/gltf-binary",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        )
 
     loop = asyncio.get_running_loop()
 
@@ -648,21 +662,25 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
         import numpy as np
         import trimesh
 
+        def strip_ns(elem):
+            for e in elem.iter():
+                if '}' in e.tag:
+                    e.tag = e.tag.split('}', 1)[1]
+            return elem
+
         def get_mesh_from_model_xml(xml_bytes, target_obj_id=None):
-            root = ET.fromstring(xml_bytes)
-            ns = {'m': 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02'}
-            objects = root.findall('.//m:object', ns)
+            root = strip_ns(ET.fromstring(xml_bytes))
             meshes = []
-            for obj in objects:
-                if target_obj_id and obj.attrib.get('id') != str(target_obj_id):
+            for obj in root.findall('.//object'):
+                if target_obj_id and str(obj.attrib.get('id', '')) != str(target_obj_id):
                     continue
-                m_elem = obj.find('m:mesh', ns)
+                m_elem = obj.find('mesh')
                 if m_elem is not None:
-                    verts_elem = m_elem.find('m:vertices', ns)
-                    tris_elem = m_elem.find('m:triangles', ns)
+                    verts_elem = m_elem.find('vertices')
+                    tris_elem = m_elem.find('triangles')
                     if verts_elem is not None and tris_elem is not None:
-                        verts = [[float(v.attrib['x']), float(v.attrib['y']), float(v.attrib['z'])] for v in verts_elem.findall('m:vertex', ns)]
-                        tris = [[int(t.attrib['v1']), int(t.attrib['v2']), int(t.attrib['v3'])] for t in tris_elem.findall('m:triangle', ns)]
+                        verts = [[float(v.attrib['x']), float(v.attrib['y']), float(v.attrib['z'])] for v in verts_elem.findall('vertex') if 'x' in v.attrib and 'y' in v.attrib and 'z' in v.attrib]
+                        tris = [[int(t.attrib['v1']), int(t.attrib['v2']), int(t.attrib['v3'])] for t in tris_elem.findall('triangle') if 'v1' in t.attrib and 'v2' in t.attrib and 'v3' in t.attrib]
                         if verts and tris:
                             meshes.append(trimesh.Trimesh(vertices=verts, faces=tris))
             return meshes
@@ -670,61 +688,80 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
         with zipfile.ZipFile(filepath) as z:
             names = set(z.namelist())
             object_ids = set()
-            if 'Metadata/model_settings.config' in names:
-                root = ET.fromstring(z.read('Metadata/model_settings.config').decode('utf-8'))
-                for plate in root.findall('plate'):
-                    thumb_meta = plate.find("metadata[@key='thumbnail_file']")
-                    p_meta = plate.find("metadata[@key='plater_id']")
-                    pid = int(p_meta.attrib.get('value', '0')) if p_meta is not None else None
-                    if thumb_meta is not None and f'plate_{plate_num}.png' in thumb_meta.attrib.get('value', ''):
-                        pid = plate_num
-                    if pid == plate_num:
-                        for mi in plate.findall('model_instance'):
-                            om = mi.find("metadata[@key='object_id']")
-                            if om is not None:
-                                object_ids.add(om.attrib['value'])
 
-            # Fallback para slice_info.config
+            # 1. Busca mapeamento em Metadata/model_settings.config
+            if 'Metadata/model_settings.config' in names:
+                try:
+                    root_cfg = strip_ns(ET.fromstring(z.read('Metadata/model_settings.config').decode('utf-8', errors='ignore')))
+                    for plate in root_cfg.findall('.//plate'):
+                        thumb_meta = plate.find("metadata[@key='thumbnail_file']")
+                        p_meta = plate.find("metadata[@key='plater_id']")
+                        pid = None
+                        if p_meta is not None and p_meta.attrib.get('value'):
+                            try:
+                                pid = int(p_meta.attrib.get('value'))
+                            except ValueError:
+                                pass
+                        if thumb_meta is not None and f'plate_{plate_num}' in thumb_meta.attrib.get('value', ''):
+                            pid = plate_num
+
+                        if pid == plate_num:
+                            for mi in plate.findall('.//model_instance'):
+                                for meta in mi.findall('metadata'):
+                                    k = meta.attrib.get('key', '')
+                                    v = meta.attrib.get('value', '')
+                                    if k in ('object_id', 'identify_id') and v:
+                                        object_ids.add(str(v))
+                except Exception as e:
+                    logger.debug(f"Aviso ao ler model_settings.config: {e}")
+
+            # 2. Fallback em Metadata/slice_info.config
             if not object_ids and 'Metadata/slice_info.config' in names:
                 try:
-                    root_si = ET.fromstring(z.read('Metadata/slice_info.config').decode('utf-8'))
-                    for p in root_si.findall('plate'):
+                    root_si = strip_ns(ET.fromstring(z.read('Metadata/slice_info.config').decode('utf-8', errors='ignore')))
+                    for p in root_si.findall('.//plate'):
                         idx_meta = p.find("metadata[@key='index']")
                         if idx_meta is not None and int(idx_meta.attrib.get('value', '0')) == plate_num:
-                            for obj in p.findall('object'):
-                                if 'identify_id' in obj.attrib:
-                                    object_ids.add(obj.attrib['identify_id'])
-                except Exception:
-                    pass
+                            for obj in p.findall('.//object'):
+                                for attr_key in ('id', 'identify_id', 'object_id'):
+                                    if attr_key in obj.attrib:
+                                        object_ids.add(str(obj.attrib[attr_key]))
+                except Exception as e:
+                    logger.debug(f"Aviso ao ler slice_info.config: {e}")
 
             plate_meshes = []
             if '3D/3dmodel.model' in names:
-                root_3d = ET.fromstring(z.read('3D/3dmodel.model').decode('utf-8'))
-                ns = {'m': 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02', 'p': 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06'}
-                for oid in object_ids:
-                    obj = root_3d.find(f".//m:object[@id='{oid}']", ns)
-                    if obj is not None:
-                        comps = obj.findall('.//m:component', ns)
-                        if comps:
-                            for c in comps:
-                                c_path = c.attrib.get('{http://schemas.microsoft.com/3dmanufacturing/production/2015/06}path', '').lstrip('/')
-                                c_oid = c.attrib.get('objectid')
-                                if c_path in names:
-                                    sub_meshes = get_mesh_from_model_xml(z.read(c_path), c_oid)
+                try:
+                    root_3d = strip_ns(ET.fromstring(z.read('3D/3dmodel.model').decode('utf-8', errors='ignore')))
+                    for oid in object_ids:
+                        for obj in root_3d.findall('.//object'):
+                            if str(obj.attrib.get('id', '')) == str(oid):
+                                comps = obj.findall('.//component')
+                                if comps:
+                                    for c in comps:
+                                        c_oid = c.attrib.get('objectid') or c.attrib.get('id')
+                                        c_path = ''
+                                        for attr_k, attr_v in c.attrib.items():
+                                            if 'path' in attr_k.lower():
+                                                c_path = attr_v.lstrip('/')
+                                        if c_path and c_path in names:
+                                            sub_meshes = get_mesh_from_model_xml(z.read(c_path), c_oid)
+                                            plate_meshes.extend(sub_meshes)
+                                        elif c_oid:
+                                            sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), c_oid)
+                                            plate_meshes.extend(sub_meshes)
+                                else:
+                                    sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), oid)
                                     plate_meshes.extend(sub_meshes)
-                        else:
-                            sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), oid)
-                            plate_meshes.extend(sub_meshes)
+                except Exception as e:
+                    logger.debug(f"Aviso ao ler 3dmodel.model: {e}")
 
             if not plate_meshes:
-                try:
-                    loaded = trimesh.load(filepath)
-                    glb_data = loaded.export(file_type='glb')
-                    with open(plate_glb_path, 'wb') as f:
-                        f.write(glb_data)
-                    return plate_glb_path
-                except Exception as e:
-                    raise HTTPException(status_code=404, detail=f"Não foi possível extrair a malha da mesa {plate_num}: {e}")
+                # NUNCA salvar o arquivo inteiro no preview da mesa individual!
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Malha 3D isolada não disponível para a mesa {plate_num}."
+                )
 
             combined = trimesh.util.concatenate(plate_meshes)
             glb_data = combined.export(file_type='glb')
@@ -740,7 +777,11 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
         logger.error(f"Erro ao extrair GLB da mesa {plate_num} de {item.id}: {e}")
         raise HTTPException(status_code=500, detail=f"Falha ao gerar malha 3D da mesa: {e}")
 
-    return FileResponse(path=str(plate_glb_path), media_type="model/gltf-binary")
+    return FileResponse(
+        path=str(plate_glb_path), 
+        media_type="model/gltf-binary",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 # Servir Frontend Estático
 STATIC_DIR = Path(__file__).resolve().parent / "static"

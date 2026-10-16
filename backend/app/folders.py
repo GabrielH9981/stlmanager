@@ -84,13 +84,12 @@ def build_folder_tree(models: List[Any]) -> List[Dict[str, Any]]:
 
 def build_projects_list(models: List[Any]) -> List[Dict[str, Any]]:
     """
-    Identifica tanto projetos baseados em pastas (pastas com múltiplas peças)
-    quanto projetos baseados em arquivos (.3mf com múltiplas mesas/objetos).
+    Identifica de forma precisa:
+    1. Projetos 3MF (arquivos fatiados com multi-mesas, ex: KATSUYU.3mf, KATSUYU projeto.3mf)
+    2. Projetos de Pasta (pastas contendo múltiplas peças STL/OBJ avulsas que compõem uma montagem, ex: CSGO AK47)
+    3. Modelos Únicos Avulsos (arquivos individuais)
     """
-    # 1. Agrupar modelos por pasta
     folder_groups: Dict[str, List[Any]] = {}
-    standalone_3mfs = []
-    standalone_singles = []
     
     for m in models:
         f_path = clean_folder_path(m.relative_path)
@@ -101,25 +100,54 @@ def build_projects_list(models: List[Any]) -> List[Dict[str, Any]]:
     projects: List[Dict[str, Any]] = []
 
     for f_path, items in folder_groups.items():
-        # Se a pasta tem 2 ou mais arquivos, ela é tratada como um Projeto Multi-Peças
-        if len(items) >= 2 and f_path != 'Raiz':
+        mf3_items = []
+        part_items = []
+        
+        for i in items:
+            ext = getattr(i, 'file_extension', '').lower()
+            if not ext and hasattr(i, 'filename'):
+                ext = Path(i.filename).suffix.lower()
+            if ext == '.3mf':
+                mf3_items.append(i)
+            else:
+                part_items.append(i)
+
+        # 1. Cada arquivo .3mf é um Projeto de Fatiador autônomo com suas próprias mesas de impressão
+        for m in mf3_items:
+            dict_m = m.to_dict() if hasattr(m, 'to_dict') else m
+            projects.append({
+                "id": f"file:{dict_m['id']}",
+                "type": "file_3mf_project",
+                "title": dict_m['filename'].rsplit('.', 1)[0].replace('_', ' '),
+                "folder_path": f_path,
+                "folder_root": f_path.split('/')[0] if f_path != 'Raiz' else 'Raiz',
+                "parts_count": 1,
+                "total_size_bytes": dict_m['file_size_bytes'],
+                "total_size_mb": dict_m.get('file_size_mb', round(dict_m['file_size_bytes'] / (1024 * 1024), 2)),
+                "total_triangles": dict_m.get('triangles_count', 0),
+                "thumbnail_url": dict_m.get('thumbnail_url'),
+                "model_id": dict_m['id'],
+                "parts": [dict_m]
+            })
+
+        # 2. Peças restantes (.stl, .obj) na pasta:
+        # Se houver 2 ou mais peças STL/OBJ, formam um Projeto de Montagem de Pasta
+        if len(part_items) >= 2 and f_path != 'Raiz':
             folder_name = f_path.split('/')[-1]
             root_name = f_path.split('/')[0]
+            total_size = sum(getattr(i, 'file_size_bytes', 0) for i in part_items)
+            total_tris = sum(getattr(i, 'triangles_count', 0) for i in part_items)
             
-            total_size = sum(getattr(i, 'file_size_bytes', 0) for i in items)
-            total_tris = sum(getattr(i, 'triangles_count', 0) for i in items)
-            
-            # Encontra um item com thumbnail para representar o projeto
             rep_item = None
-            for i in items:
+            for i in part_items:
                 dict_i = i.to_dict() if hasattr(i, 'to_dict') else i
                 if dict_i.get('has_thumbnail'):
                     rep_item = dict_i
                     break
-            if not rep_item and items:
-                rep_item = items[0].to_dict() if hasattr(items[0], 'to_dict') else items[0]
-                
-            parts_summary = [i.to_dict() if hasattr(i, 'to_dict') else i for i in items]
+            if not rep_item and part_items:
+                rep_item = part_items[0].to_dict() if hasattr(part_items[0], 'to_dict') else part_items[0]
+
+            parts_summary = [i.to_dict() if hasattr(i, 'to_dict') else i for i in part_items]
             parts_summary.sort(key=lambda x: x['filename'])
 
             projects.append({
@@ -128,56 +156,36 @@ def build_projects_list(models: List[Any]) -> List[Dict[str, Any]]:
                 "title": folder_name.replace('_', ' ').title(),
                 "folder_path": f_path,
                 "folder_root": root_name,
-                "parts_count": len(items),
+                "parts_count": len(part_items),
                 "total_size_bytes": total_size,
                 "total_size_mb": round(total_size / (1024 * 1024), 2),
                 "total_triangles": total_tris,
                 "thumbnail_url": rep_item.get('thumbnail_url') if rep_item else None,
                 "parts": parts_summary
             })
-        else:
-            # Arquivo avulso ou projeto 3mf
-            for i in items:
-                dict_i = i.to_dict() if hasattr(i, 'to_dict') else i
-                if dict_i.get('file_extension') == '.3mf':
-                    standalone_3mfs.append(dict_i)
-                else:
-                    standalone_singles.append(dict_i)
+        elif len(part_items) == 1:
+            # 1 peça STL/OBJ avulsa
+            s = part_items[0]
+            dict_s = s.to_dict() if hasattr(s, 'to_dict') else s
+            projects.append({
+                "id": f"single:{dict_s['id']}",
+                "type": "single_model",
+                "title": dict_s['filename'].rsplit('.', 1)[0].replace('_', ' '),
+                "folder_path": f_path,
+                "folder_root": f_path.split('/')[0] if f_path != 'Raiz' else 'Raiz',
+                "parts_count": 1,
+                "total_size_bytes": dict_s['file_size_bytes'],
+                "total_size_mb": dict_s.get('file_size_mb', round(dict_s['file_size_bytes'] / (1024 * 1024), 2)),
+                "total_triangles": dict_s.get('triangles_count', 0),
+                "thumbnail_url": dict_s.get('thumbnail_url'),
+                "model_id": dict_s['id'],
+                "parts": [dict_s]
+            })
 
-    # Adicionar projetos .3mf avulsos como projetos
-    for m in standalone_3mfs:
-        projects.append({
-            "id": f"file:{m['id']}",
-            "type": "file_3mf_project",
-            "title": m['filename'].rsplit('.', 1)[0].replace('_', ' '),
-            "folder_path": m.get('folder_path', 'Raiz'),
-            "folder_root": m.get('folder_root', 'Raiz'),
-            "parts_count": 1,
-            "total_size_bytes": m['file_size_bytes'],
-            "total_size_mb": m['file_size_mb'],
-            "total_triangles": m['triangles_count'],
-            "thumbnail_url": m.get('thumbnail_url'),
-            "model_id": m['id'],
-            "parts": [m]
-        })
-
-    # Adicionar arquivos avulsos individuais
-    for s in standalone_singles:
-        projects.append({
-            "id": f"single:{s['id']}",
-            "type": "single_model",
-            "title": s['filename'].rsplit('.', 1)[0].replace('_', ' '),
-            "folder_path": s.get('folder_path', 'Raiz'),
-            "folder_root": s.get('folder_root', 'Raiz'),
-            "parts_count": 1,
-            "total_size_bytes": s['file_size_bytes'],
-            "total_size_mb": s['file_size_mb'],
-            "total_triangles": s['triangles_count'],
-            "thumbnail_url": s.get('thumbnail_url'),
-            "model_id": s['id'],
-            "parts": [s]
-        })
-
-    # Ordenar: primeiro projetos com mais peças, depois por título
-    projects.sort(key=lambda x: (-x['parts_count'], x['title'].lower()))
+    # Ordenar: Projetos (3MF e Montagens de Pasta) primeiro, depois avulsos
+    projects.sort(key=lambda x: (
+        0 if x['type'] in ('folder_project', 'file_3mf_project') else 1,
+        -x['parts_count'],
+        x['title'].lower()
+    ))
     return projects

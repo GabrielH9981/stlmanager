@@ -273,6 +273,87 @@ let isPlateWireframe = false;
 let projScene, projCamera, projRenderer, projControls, currentProjObject, projGridHelper;
 let isProjWireframe = false;
 
+// Concurrency load tokens
+let activePlateLoadId = 0;
+let activeMainLoadId = 0;
+let activeProjLoadId = 0;
+
+function clearPlateScene() {
+    if (!plateScene) return;
+    const toRemove = [];
+    plateScene.children.forEach(child => {
+        if (!child.isLight && child !== plateGridHelper) {
+            toRemove.push(child);
+        }
+    });
+    toRemove.forEach(c => {
+        plateScene.remove(c);
+        if (c.traverse) {
+            c.traverse(node => {
+                if (node.isMesh) {
+                    if (node.geometry) node.geometry.dispose();
+                    if (node.material) {
+                        if (Array.isArray(node.material)) node.material.forEach(m => m.dispose());
+                        else node.material.dispose();
+                    }
+                }
+            });
+        }
+    });
+    currentPlateObject = null;
+    currentPlate3DNum = null;
+}
+
+function clearMainScene() {
+    if (!scene) return;
+    const toRemove = [];
+    scene.children.forEach(child => {
+        if (!child.isLight && child !== gridHelper) {
+            toRemove.push(child);
+        }
+    });
+    toRemove.forEach(c => {
+        scene.remove(c);
+        if (c.traverse) {
+            c.traverse(node => {
+                if (node.isMesh) {
+                    if (node.geometry) node.geometry.dispose();
+                    if (node.material) {
+                        if (Array.isArray(node.material)) node.material.forEach(m => m.dispose());
+                        else node.material.dispose();
+                    }
+                }
+            });
+        }
+    });
+    currentObject = null;
+    is3DLoadedForCurrentModel = false;
+}
+
+function clearProjScene() {
+    if (!projScene) return;
+    const toRemove = [];
+    projScene.children.forEach(child => {
+        if (!child.isLight && child !== projGridHelper) {
+            toRemove.push(child);
+        }
+    });
+    toRemove.forEach(c => {
+        projScene.remove(c);
+        if (c.traverse) {
+            c.traverse(node => {
+                if (node.isMesh) {
+                    if (node.geometry) node.geometry.dispose();
+                    if (node.material) {
+                        if (Array.isArray(node.material)) node.material.forEach(m => m.dispose());
+                        else node.material.dispose();
+                    }
+                }
+            });
+        }
+    });
+    currentProjObject = null;
+}
 
 // ==========================================
 // Status Badge Helper
@@ -1514,6 +1595,9 @@ function openProjectModal(project) {
 }
 
 async function selectProjectPart(part) {
+    const thisLoadId = ++activeProjLoadId;
+    clearProjScene();
+
     state.activeProjectPart = part;
     projectActivePartName.textContent = part.filename;
     projectPartMetrics.innerHTML = `
@@ -1527,13 +1611,11 @@ async function selectProjectPart(part) {
     projectViewerLoader.style.display = 'flex';
     projectViewerLoader.innerHTML = `<div class="spinner"></div><span>Carregando ${part.filename}...</span>`;
 
-    if (currentProjObject) {
-        projScene.remove(currentProjObject);
-        currentProjObject = null;
-    }
-
     try {
         const object3d = await load3DFile(part);
+        if (thisLoadId !== activeProjLoadId) return;
+
+        clearProjScene();
         const box = new THREE.Box3().setFromObject(object3d);
         const size = box.getSize(new THREE.Vector3());
         object3d.position.y += (size.y / 2);
@@ -1544,6 +1626,7 @@ async function selectProjectPart(part) {
 
         resetProjCamera();
     } catch (err) {
+        if (thisLoadId !== activeProjLoadId) return;
         AppLogger.error('PROJECT', `Falha ao carregar peça ${part.filename}`, err);
         projectViewerLoader.innerHTML = `
             <div style="color: #F43F5E; text-align: center; font-size: 0.82rem; padding: 20px;">
@@ -1554,12 +1637,10 @@ async function selectProjectPart(part) {
 }
 
 function closeProjectModal() {
+    activeProjLoadId++;
     projectModal.style.display = 'none';
     state.activeProject = null;
-    if (currentProjObject) {
-        projScene.remove(currentProjObject);
-        currentProjObject = null;
-    }
+    clearProjScene();
 }
 
 
@@ -1739,6 +1820,8 @@ function switchViewerMode(mode) {
 function switchPlateSubMode(subMode) {
     state.plateSubMode = subMode;
     if (subMode === '2d') {
+        activePlateLoadId++;
+        clearPlateScene();
         btnPlateView2D.classList.add('active');
         btnPlateView3D.classList.remove('active');
         plateFrame2D.style.display = 'block';
@@ -1760,25 +1843,27 @@ function switchPlateSubMode(subMode) {
 }
 
 async function loadPlate3DMesh(modelId, plateNum) {
-    if (currentPlate3DNum === `${modelId}_${plateNum}` && currentPlateObject) return;
+    const thisLoadId = ++activePlateLoadId;
+    clearPlateScene();
     currentPlate3DNum = `${modelId}_${plateNum}`;
 
     plate3DLoader.style.display = 'flex';
     plate3DLoader.innerHTML = `<div class="spinner"></div><span>Extraindo malha 3D da mesa ${plateNum}...</span>`;
 
-    if (currentPlateObject) {
-        plateScene.remove(currentPlateObject);
-        currentPlateObject = null;
-    }
-
     try {
         AppLogger.info('PLATE_3D', `Baixando modelo 3D otimizado para mesa ${plateNum}...`);
         const loader = new GLTFLoader();
-        loader.load(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`, (gltf) => {
+        loader.load(`/api/models/${modelId}/plates/${plateNum}/mesh.glb?v=${Date.now()}`, (gltf) => {
+            if (thisLoadId !== activePlateLoadId) {
+                // Requisição obsoleta descartada
+                return;
+            }
+            clearPlateScene();
+            currentPlate3DNum = `${modelId}_${plateNum}`;
+
             const group = gltf.scene;
             const box = new THREE.Box3().setFromObject(group);
             const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
 
             // Centralizar horizontalmente e posicionar base sobre a mesa (Y=0)
             group.position.x = -center.x;
@@ -1805,14 +1890,17 @@ async function loadPlate3DMesh(modelId, plateNum) {
 
             resetPlateCamera();
         }, undefined, (err) => {
+            if (thisLoadId !== activePlateLoadId) return;
             AppLogger.error('PLATE_3D', `Falha ao carregar 3D da mesa ${plateNum}`, err);
             plate3DLoader.innerHTML = `
                 <div style="color: #F43F5E; text-align: center; font-size: 0.85rem; padding: 20px;">
-                    <span>Não foi possível carregar a malha 3D desta mesa.</span>
+                    <p style="margin-bottom: 6px; font-weight: 600;">Visualização 3D individual desta mesa não disponível.</p>
+                    <span style="font-size: 0.78rem; color: #94A3B8;">Use a aba "Foto da Mesa" para inspecionar o fatiamento original com precisão ou abra no Bambu Studio.</span>
                 </div>
             `;
         });
     } catch (e) {
+        if (thisLoadId !== activePlateLoadId) return;
         AppLogger.error('PLATE_3D', `Erro ao solicitar malha 3D da mesa ${plateNum}`, e);
     }
 }
@@ -1902,6 +1990,9 @@ function selectPlate(index) {
     // Se estiver em modo 3D, carrega malha da nova mesa selecionada
     if (state.plateSubMode === '3d') {
         loadPlate3DMesh(state.activeModel.id, plate.index);
+    } else {
+        activePlateLoadId++;
+        clearPlateScene();
     }
 
     // Atualiza imagem 2D principal
@@ -1943,7 +2034,8 @@ function selectPlate(index) {
 // Single Model 3D Scene Loader
 // ==========================================
 async function load3DScene(model) {
-    if (is3DLoadedForCurrentModel) return;
+    if (is3DLoadedForCurrentModel && currentObject) return;
+    const thisLoadId = ++activeMainLoadId;
 
     viewerLoader.style.display = 'flex';
     viewerLoader.innerHTML = `
@@ -1951,13 +2043,13 @@ async function load3DScene(model) {
         <span>Carregando arquivo 3D (${model.file_size_mb} MB)...</span>
     `;
 
-    if (currentObject) {
-        scene.remove(currentObject);
-        currentObject = null;
-    }
+    clearMainScene();
 
     try {
         const object3d = await load3DFile(model);
+        if (thisLoadId !== activeMainLoadId) return;
+
+        clearMainScene();
         const box = new THREE.Box3().setFromObject(object3d);
         const size = box.getSize(new THREE.Vector3());
         object3d.position.y += (size.y / 2);
@@ -1970,6 +2062,7 @@ async function load3DScene(model) {
         AppLogger.info('VIEWER', `✓ Modelo ${model.filename} renderizado com sucesso no viewport.`);
         resetCamera();
     } catch (err) {
+        if (thisLoadId !== activeMainLoadId) return;
         AppLogger.error('VIEWER', `Falha ao abrir modelo ${model.filename}`, err);
         viewerLoader.innerHTML = `
             <div style="color: #F43F5E; text-align: center; max-width: 480px; padding: 20px;">
@@ -1984,6 +2077,11 @@ async function load3DScene(model) {
 
 async function openViewer(model) {
     AppLogger.info('VIEWER', `Abrindo visualizador para [${model.id}] ${model.filename}...`);
+    activePlateLoadId++;
+    activeMainLoadId++;
+    clearPlateScene();
+    clearMainScene();
+
     state.activeModel = model;
     is3DLoadedForCurrentModel = false;
     currentPlatesData = null;
@@ -2007,11 +2105,6 @@ async function openViewer(model) {
     `;
 
     viewerModal.style.display = 'flex';
-
-    if (currentObject) {
-        scene.remove(currentObject);
-        currentObject = null;
-    }
 
     const ext = (model.file_extension || '').toLowerCase();
     const isMegaproject = (model.file_size_mb > 35 || model.triangles_count > 1500000);
@@ -2071,18 +2164,14 @@ function resetCamera() {
 }
 
 function closeModal() {
+    activePlateLoadId++;
+    activeMainLoadId++;
     viewerModal.style.display = 'none';
     is3DLoadedForCurrentModel = false;
     currentPlatesData = null;
     currentPlate3DNum = null;
-    if (currentObject) {
-        scene.remove(currentObject);
-        currentObject = null;
-    }
-    if (currentPlateObject) {
-        plateScene.remove(currentPlateObject);
-        currentPlateObject = null;
-    }
+    clearPlateScene();
+    clearMainScene();
 }
 
 
