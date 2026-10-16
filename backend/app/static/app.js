@@ -665,11 +665,11 @@ function setupEventListeners() {
 // ==========================================
 // Central View Dispatcher
 // ==========================================
-function refreshView() {
+function refreshView(isBackground = false) {
     if (state.viewMode === 'projects') {
-        fetchProjects();
+        fetchProjects(isBackground);
     } else {
-        fetchModels();
+        fetchModels(isBackground);
     }
 }
 
@@ -796,13 +796,15 @@ function renderSubfoldersBar(rootFolder) {
 // ==========================================
 // Mode: Projects View (Grouped by Folder / 3MF)
 // ==========================================
-async function fetchProjects() {
-    modelsGrid.innerHTML = `
-        <div class="loading-state">
-            <div class="spinner"></div>
-            <p>Organizando projetos e montagens...</p>
-        </div>
-    `;
+async function fetchProjects(isBackground = false) {
+    if (!isBackground && modelsGrid.children.length === 0) {
+        modelsGrid.innerHTML = `
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <p>Organizando projetos e montagens...</p>
+            </div>
+        `;
+    }
 
     try {
         const params = new URLSearchParams();
@@ -811,20 +813,24 @@ async function fetchProjects() {
         if (state.search) params.append('search', state.search);
         if (state.statusFilter) params.append('status', state.statusFilter);
 
-        AppLogger.info('API', `Buscando projetos agrupados (/api/projects?${params.toString()})...`);
         const res = await fetch(`/api/projects?${params.toString()}`);
         const projects = await res.json();
+        
+        const countChanged = !state.projects || state.projects.length !== projects.length;
         state.projects = projects;
-        AppLogger.info('API', `Recebidos ${projects.length} projetos/grupos.`);
 
-        renderProjects(projects);
+        if (!isBackground || countChanged || modelsGrid.querySelector('.loading-state') || modelsGrid.querySelector('.empty-state')) {
+            renderProjects(projects);
+        }
     } catch (err) {
         AppLogger.error('API', 'Erro ao carregar projetos', err);
-        modelsGrid.innerHTML = `
-            <div class="empty-state">
-                <p>Erro ao carregar projetos do servidor.</p>
-            </div>
-        `;
+        if (!isBackground && modelsGrid.children.length === 0) {
+            modelsGrid.innerHTML = `
+                <div class="empty-state">
+                    <p>Erro ao carregar projetos do servidor.</p>
+                </div>
+            `;
+        }
     }
 }
 
@@ -983,13 +989,15 @@ function render3MFProjectCard(proj) {
 // ==========================================
 // Mode: Files View (All Individual Models)
 // ==========================================
-async function fetchModels() {
-    modelsGrid.innerHTML = `
-        <div class="loading-state">
-            <div class="spinner"></div>
-            <p>Carregando acervo de arquivos...</p>
-        </div>
-    `;
+async function fetchModels(isBackground = false) {
+    if (!isBackground && modelsGrid.children.length === 0) {
+        modelsGrid.innerHTML = `
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <p>Carregando acervo de arquivos...</p>
+            </div>
+        `;
+    }
 
     try {
         const params = new URLSearchParams();
@@ -1003,20 +1011,24 @@ async function fetchModels() {
         params.append('order', state.sortOrder);
         params.append('limit', '100');
 
-        AppLogger.info('API', `Buscando modelos avulsos (${params.toString()})...`);
         const res = await fetch(`/api/models?${params.toString()}`);
         const models = await res.json();
+        
+        const countChanged = !state.models || state.models.length !== models.length;
         state.models = models;
-        AppLogger.info('API', `Recebidos ${models.length} modelos.`);
 
-        renderModels(models);
+        if (!isBackground || countChanged || modelsGrid.querySelector('.loading-state') || modelsGrid.querySelector('.empty-state')) {
+            renderModels(models);
+        }
     } catch (err) {
         AppLogger.error('API', 'Erro ao carregar modelos avulsos', err);
-        modelsGrid.innerHTML = `
-            <div class="empty-state">
-                <p>Erro ao carregar modelos do servidor.</p>
-            </div>
-        `;
+        if (!isBackground && modelsGrid.children.length === 0) {
+            modelsGrid.innerHTML = `
+                <div class="empty-state">
+                    <p>Erro ao carregar modelos do servidor.</p>
+                </div>
+            `;
+        }
     }
 }
 
@@ -1789,10 +1801,12 @@ function closeModal() {
 // ==========================================
 // Background Scan Polling
 // ==========================================
+let lastScannedCount = 0;
+
 function startPollingScan() {
     scanProgressBanner.style.display = 'flex';
     if (state.pollInterval) clearInterval(state.pollInterval);
-    state.pollInterval = setInterval(checkScanStatus, 800);
+    state.pollInterval = setInterval(checkScanStatus, 1000);
 }
 
 async function checkScanStatus() {
@@ -1805,18 +1819,33 @@ async function checkScanStatus() {
             scanProgressBar.style.width = `${status.percentage}%`;
             scanProgressPercent.textContent = `${status.percentage}%`;
             scanCurrentFile.textContent = status.current_file;
-            scanStatusTitle.textContent = `Indexando arquivos (${status.processed_files}/${status.total_files})`;
+            scanStatusTitle.textContent = `Indexando arquivos (${status.processed_files}/${status.total_files}) • Você já pode usar e explorar os modelos abaixo!`;
+
+            if (!state.pollInterval) {
+                state.pollInterval = setInterval(checkScanStatus, 1000);
+            }
+
+            // Atualização dinâmica em tempo real à medida que novos lotes de arquivos entram no banco
+            if (status.processed_files >= lastScannedCount + 8 || (lastScannedCount === 0 && status.processed_files > 0)) {
+                lastScannedCount = status.processed_files;
+                fetchStats();
+                fetchFolders();
+                // Apenas atualiza a grade se o usuário não estiver com foco no campo de busca ou dentro de um modal 3D
+                if (document.activeElement !== searchInput && viewerModal.style.display === 'none' && projectModal.style.display === 'none') {
+                    refreshView(true);
+                }
+            }
         } else {
             if (state.pollInterval) {
                 clearInterval(state.pollInterval);
                 state.pollInterval = null;
                 setTimeout(() => {
                     scanProgressBanner.style.display = 'none';
-                }, 2000);
+                }, 2500);
                 AppLogger.info('SCAN', 'Varredura finalizada. Atualizando acervo...');
                 fetchStats();
                 fetchFolders();
-                refreshView();
+                refreshView(false);
             }
         }
     } catch (err) {

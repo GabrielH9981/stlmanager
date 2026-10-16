@@ -220,8 +220,8 @@ class ScannerManager:
                     
                     self.processed_files += 1
 
-                    # Persistir no banco a cada 15 arquivos para não acumular objetos na memória
-                    if self.processed_files % 15 == 0:
+                    # Persistir no banco a cada 8 arquivos para aparecer na tela em tempo real
+                    if self.processed_files % 8 == 0:
                         await session.commit()
                         gc.collect()
 
