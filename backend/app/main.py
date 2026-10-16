@@ -732,64 +732,82 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
 
     def generate_plate_glb():
         import io
+        import json
         import zipfile
         import xml.etree.ElementTree as ET
         import numpy as np
         import trimesh
 
-        def strip_ns(elem):
-            for e in elem.iter():
-                if '}' in e.tag:
-                    e.tag = e.tag.split('}', 1)[1]
-            return elem
-
-        def get_mesh_from_model_xml(xml_bytes, target_obj_id=None):
-            meshes = []
+        def parse_3mf_transform(t_str):
+            if not t_str:
+                return np.eye(4, dtype=float)
             try:
-                context = ET.iterparse(io.BytesIO(xml_bytes), events=('start', 'end'))
-                current_obj_id = None
-                is_target = False
-                verts = []
-                tris = []
+                parts = [float(x) for x in t_str.strip().split()]
+                if len(parts) == 12:
+                    return np.array([
+                        [parts[0], parts[3], parts[6], parts[9]],
+                        [parts[1], parts[4], parts[7], parts[10]],
+                        [parts[2], parts[5], parts[8], parts[11]],
+                        [0.0,      0.0,      0.0,      1.0]
+                    ], dtype=float)
+                elif len(parts) == 16:
+                    return np.array(parts, dtype=float).reshape((4, 4))
+            except Exception:
+                pass
+            return np.eye(4, dtype=float)
 
-                for event, elem in context:
-                    tag = elem.tag.split('}')[-1]
-                    if event == 'start':
-                        if tag == 'object':
-                            current_obj_id = elem.attrib.get('id', '')
-                            is_target = (target_obj_id is None or str(current_obj_id) == str(target_obj_id))
-                    elif event == 'end':
-                        if is_target:
-                            if tag == 'vertex':
-                                at = elem.attrib
-                                if 'x' in at and 'y' in at and 'z' in at:
-                                    verts.append([float(at['x']), float(at['y']), float(at['z'])])
-                            elif tag == 'triangle':
-                                at = elem.attrib
-                                if 'v1' in at and 'v2' in at and 'v3' in at:
-                                    tris.append([int(at['v1']), int(at['v2']), int(at['v3'])])
-                        if tag == 'object':
-                            if is_target and verts and tris:
-                                try:
-                                    meshes.append(trimesh.Trimesh(vertices=verts, faces=tris))
-                                except Exception as ex:
-                                    logger.warning(f"Aviso ao construir Trimesh para objeto {current_obj_id}: {ex}")
-                                verts = []
-                                tris = []
-                            is_target = False
+        def parse_xml_object(xml_bytes, target_oid=None):
+            context = ET.iterparse(io.BytesIO(xml_bytes), events=('start', 'end'))
+            current_obj_id = None
+            is_target = False
+            components = []
+            verts = []
+            tris = []
+
+            for event, elem in context:
+                tag = elem.tag.split('}')[-1]
+                if event == 'start':
+                    if tag == 'object':
+                        current_obj_id = str(elem.attrib.get('id', ''))
+                        is_target = (target_oid is None or current_obj_id == str(target_oid))
+                    elif is_target and tag == 'component':
+                        c_path = None
+                        for k, v in elem.attrib.items():
+                            if k.endswith('path'):
+                                c_path = v.lstrip('/')
+                                break
+                        components.append({
+                            'path': c_path,
+                            'objectid': str(elem.attrib.get('objectid', '')),
+                            'transform': parse_3mf_transform(elem.attrib.get('transform'))
+                        })
+                elif event == 'end':
+                    if is_target:
+                        if tag == 'vertex':
+                            at = elem.attrib
+                            if 'x' in at and 'y' in at and 'z' in at:
+                                verts.append([float(at['x']), float(at['y']), float(at['z'])])
+                        elif tag == 'triangle':
+                            at = elem.attrib
+                            if 'v1' in at and 'v2' in at and 'v3' in at:
+                                tris.append([int(at['v1']), int(at['v2']), int(at['v3'])])
+                    if tag == 'object':
+                        if is_target and target_oid is not None:
+                            break
+                    if tag in ('vertex', 'triangle'):
                         elem.clear()
-            except Exception as e:
-                logger.warning(f"Erro no iterparse do 3MF: {e}")
-            return meshes
+
+            return components, verts, tris
 
         with zipfile.ZipFile(filepath) as z:
             names = set(z.namelist())
+            lower_names = {n.lower(): n for n in names}
             object_ids = set()
 
             # 1. Busca mapeamento em Metadata/model_settings.config
             if 'Metadata/model_settings.config' in names:
                 try:
-                    root_cfg = strip_ns(ET.fromstring(z.read('Metadata/model_settings.config').decode('utf-8', errors='ignore')))
+                    root_cfg = ET.fromstring(z.read('Metadata/model_settings.config').decode('utf-8', errors='ignore'))
                     for plate in root_cfg.findall('.//plate'):
                         thumb_meta = plate.find("metadata[@key='thumbnail_file']")
                         p_meta = plate.find("metadata[@key='plater_id']")
@@ -807,7 +825,7 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
                                 for meta in mi.findall('metadata'):
                                     k = meta.attrib.get('key', '')
                                     v = meta.attrib.get('value', '')
-                                    if k in ('object_id', 'identify_id') and v:
+                                    if k == 'object_id' and v:
                                         object_ids.add(str(v))
                 except Exception as e:
                     logger.debug(f"Aviso ao ler model_settings.config: {e}")
@@ -815,28 +833,106 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
             # 2. Fallback em Metadata/slice_info.config
             if not object_ids and 'Metadata/slice_info.config' in names:
                 try:
-                    root_si = strip_ns(ET.fromstring(z.read('Metadata/slice_info.config').decode('utf-8', errors='ignore')))
+                    root_si = ET.fromstring(z.read('Metadata/slice_info.config').decode('utf-8', errors='ignore'))
                     for p in root_si.findall('.//plate'):
                         idx_meta = p.find("metadata[@key='index']")
                         if idx_meta is not None and int(idx_meta.attrib.get('value', '0')) == plate_num:
                             for obj in p.findall('.//object'):
-                                for attr_key in ('id', 'identify_id', 'object_id'):
+                                for attr_key in ('object_id', 'id', 'identify_id'):
                                     if attr_key in obj.attrib:
                                         object_ids.add(str(obj.attrib[attr_key]))
                 except Exception as e:
                     logger.debug(f"Aviso ao ler slice_info.config: {e}")
 
-            plate_meshes = []
+            # 3. Fallback em Metadata/plate_{plate_num}.json
+            if not object_ids and f'Metadata/plate_{plate_num}.json' in names:
+                try:
+                    p_json = json.loads(z.read(f'Metadata/plate_{plate_num}.json').decode('utf-8', errors='ignore'))
+                    if 'bbox_objects' in p_json:
+                        for bo in p_json['bbox_objects']:
+                            if 'object_id' in bo:
+                                object_ids.add(str(bo['object_id']))
+                except Exception:
+                    pass
+
+            # Pre-parse <build> em 3D/3dmodel.model para coletar transforms posicionais de instâncias
+            build_transforms = {}
             if '3D/3dmodel.model' in names:
                 try:
-                    for oid in object_ids:
-                        sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), oid)
-                        plate_meshes.extend(sub_meshes)
+                    root_3d = ET.fromstring(z.read('3D/3dmodel.model'))
+                    for item in root_3d.findall('.//{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}item'):
+                        oid = str(item.attrib.get('objectid', ''))
+                        t = parse_3mf_transform(item.attrib.get('transform'))
+                        if oid:
+                            build_transforms.setdefault(oid, []).append(t)
                 except Exception as e:
-                    logger.debug(f"Aviso ao ler 3dmodel.model: {e}")
+                    logger.debug(f"Aviso ao ler build items de 3dmodel.model: {e}")
+
+            def resolve_object(rel_path, target_oid, current_mat, depth=0):
+                if depth > 6:
+                    return []
+                actual_path = rel_path
+                if actual_path not in names:
+                    actual_path = lower_names.get(rel_path.lower())
+                    if not actual_path or actual_path not in names:
+                        return []
+
+                try:
+                    xml_bytes = z.read(actual_path)
+                except Exception:
+                    return []
+
+                comps, verts, tris = parse_xml_object(xml_bytes, target_oid)
+                results = []
+
+                if comps:
+                    for comp in comps:
+                        c_path = comp['path'] or actual_path
+                        c_oid = comp['objectid']
+                        c_mat = comp['transform']
+                        combined_mat = current_mat @ c_mat
+                        results.extend(resolve_object(c_path, c_oid, combined_mat, depth + 1))
+
+                if verts and tris:
+                    try:
+                        v_arr = np.array(verts, dtype=float)
+                        f_arr = np.array(tris, dtype=int)
+                        mesh = trimesh.Trimesh(vertices=v_arr, faces=f_arr)
+                        if current_mat is not None and not np.allclose(current_mat, np.eye(4)):
+                            mesh.apply_transform(current_mat)
+                        results.append(mesh)
+                    except Exception as ex:
+                        logger.warning(f"Erro ao instanciar Trimesh para objeto {target_oid}: {ex}")
+
+                return results
+
+            plate_meshes = []
+            for oid in object_ids:
+                b_mats = build_transforms.get(oid) or [np.eye(4, dtype=float)]
+                for b_mat in b_mats:
+                    meshes = resolve_object('3D/3dmodel.model', oid, b_mat)
+                    if not meshes:
+                        # Fallback: tentar direto nos arquivos 3D/Objects/*.model
+                        for n in names:
+                            if n.startswith('3D/Objects/') and n.endswith('.model'):
+                                meshes = resolve_object(n, oid, b_mat)
+                                if meshes:
+                                    break
+                    plate_meshes.extend(meshes)
+
+            # Fallback especial para arquivos com mesa única sem metadados explícitos de mesa
+            if not plate_meshes and plate_num == 1:
+                if '3D/3dmodel.model' in names:
+                    if build_transforms:
+                        for oid, b_mats in build_transforms.items():
+                            for b_mat in b_mats:
+                                plate_meshes.extend(resolve_object('3D/3dmodel.model', oid, b_mat))
+                    if not plate_meshes:
+                        _, verts, tris = parse_xml_object(z.read('3D/3dmodel.model'), None)
+                        if verts and tris:
+                            plate_meshes.append(trimesh.Trimesh(vertices=np.array(verts), faces=np.array(tris)))
 
             if not plate_meshes:
-                # NUNCA salvar o arquivo inteiro no preview da mesa individual!
                 raise HTTPException(
                     status_code=404, 
                     detail=f"Malha 3D isolada não disponível para a mesa {plate_num}."
