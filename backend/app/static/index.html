@@ -512,6 +512,13 @@
                 <button id="btnCloseDebug" class="btn-close">&times;</button>
             </div>
         </div>
+        <div class="debug-drawer-cache-bar" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: rgba(15,23,42,0.8); border-bottom: 1px solid var(--border-color); font-size: 0.8rem;">
+            <div>
+                <span style="color: var(--text-muted);">💾 Cache 3D de Mesas (Teto: 500 MB):</span>
+                <strong id="cacheUsageText" style="color: var(--accent-primary); margin-left: 6px;">0 MB / 500 MB</strong>
+            </div>
+            <button id="btnClearCacheBtn" class="btn btn-secondary btn-sm" style="font-size: 0.75rem;">Limpar Cache 3D</button>
+        </div>
         <div class="debug-drawer-body" id="debugLogsContainer">
             <div class="debug-empty">Aguardando eventos...</div>
         </div>

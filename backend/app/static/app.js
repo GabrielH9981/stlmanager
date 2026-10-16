@@ -638,7 +638,27 @@ function setupEventListeners() {
     debugToggleBtn.addEventListener('click', () => {
         const isHidden = debugDrawer.style.display === 'none';
         debugDrawer.style.display = isHidden ? 'flex' : 'none';
+        if (isHidden) {
+            updateCacheStatus();
+        }
     });
+
+    const btnClearCache = document.getElementById('btnClearCacheBtn');
+    if (btnClearCache) {
+        btnClearCache.addEventListener('click', async () => {
+            try {
+                btnClearCache.disabled = true;
+                const res = await fetch('/api/cache/clear', { method: 'POST' });
+                const data = await res.json();
+                showToast('Cache 3D', `Cache liberado! ${data.freed_mb} MB removidos.`, 'success', 3000);
+                updateCacheStatus();
+            } catch (err) {
+                showToast('Erro', `Falha ao limpar cache: ${err.message}`, 'error', 3000);
+            } finally {
+                btnClearCache.disabled = false;
+            }
+        });
+    }
 
     btnCloseDebug.addEventListener('click', () => {
         debugDrawer.style.display = 'none';
@@ -1855,7 +1875,7 @@ async function loadPlate3DMesh(modelId, plateNum) {
     try {
         AppLogger.info('PLATE_3D', `Baixando modelo 3D otimizado para mesa ${plateNum}...`);
         const loader = new GLTFLoader();
-        loader.load(`/api/models/${modelId}/plates/${plateNum}/mesh.glb?v=${Date.now()}`, (gltf) => {
+        loader.load(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`, (gltf) => {
             if (thisLoadId !== activePlateLoadId) {
                 // Requisição obsoleta descartada
                 return;
@@ -1904,6 +1924,26 @@ async function loadPlate3DMesh(modelId, plateNum) {
     } catch (e) {
         if (thisLoadId !== activePlateLoadId) return;
         AppLogger.error('PLATE_3D', `Erro ao solicitar malha 3D da mesa ${plateNum}`, e);
+    }
+}
+
+function preloadPlate3DMesh(modelId, plateNum) {
+    if (!modelId || !plateNum) return;
+    fetch(`/api/models/${modelId}/plates/${plateNum}/mesh.glb`)
+        .then(() => AppLogger.debug('PREFETCH', `✓ Mesa ${plateNum} pré-carregada no cache.`))
+        .catch(() => {});
+}
+
+async function updateCacheStatus() {
+    try {
+        const res = await fetch('/api/cache/status');
+        const data = await res.json();
+        const cacheUsageText = document.getElementById('cacheUsageText');
+        if (cacheUsageText) {
+            cacheUsageText.textContent = `${data.total_size_mb} MB / ${data.max_size_mb} MB (${data.files_count} arquivos)`;
+        }
+    } catch (e) {
+        console.error('Erro ao obter status de cache:', e);
     }
 }
 
@@ -1995,6 +2035,8 @@ function selectPlate(index) {
     } else {
         activePlateLoadId++;
         clearPlateScene();
+        // Pré-carrega a malha 3D da mesa em segundo plano silencioso
+        preloadPlate3DMesh(state.activeModel.id, plate.index);
     }
 
     // Atualiza imagem 2D principal

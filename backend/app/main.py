@@ -19,6 +19,47 @@ from .scanner import scanner
 
 logger = logging.getLogger(__name__)
 
+# Teto máximo de cache para malhas 3D (.glb de mesas): 500 MB
+MAX_PREVIEWS_CACHE_BYTES = 500 * 1024 * 1024
+
+def clean_preview_cache(max_size_bytes: int = MAX_PREVIEWS_CACHE_BYTES):
+    """
+    Mantém o diretório de cache de malhas 3D (PREVIEWS_DIR) rigorosamente dentro do teto (LRU).
+    Remove os arquivos acessados há mais tempo se o limite de 500MB for ultrapassado.
+    """
+    try:
+        if not PREVIEWS_DIR.exists():
+            return
+
+        files = []
+        total_bytes = 0
+        for f in PREVIEWS_DIR.glob("*.glb"):
+            try:
+                st = f.stat()
+                last_used = max(st.st_atime, st.st_mtime)
+                files.append((last_used, st.st_size, f))
+                total_bytes += st.st_size
+            except Exception:
+                pass
+
+        if total_bytes > max_size_bytes:
+            # Ordenar do mais antigo para o mais recente (LRU)
+            files.sort(key=lambda x: x[0])
+            target_bytes = int(max_size_bytes * 0.8)  # Libera até 400MB para dar margem
+            freed = 0
+            for last_used, size, f in files:
+                try:
+                    f.unlink()
+                    total_bytes -= size
+                    freed += size
+                    if total_bytes <= target_bytes:
+                        break
+                except Exception:
+                    pass
+            logger.info(f"Cache LRU: liberados {freed / (1024*1024):.1f} MB. Uso atual: {total_bytes / (1024*1024):.1f} MB")
+    except Exception as e:
+        logger.warning(f"Aviso ao gerenciar cache de previews: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,15 +75,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Aviso ao normalizar caminhos: {e}")
 
-    # Limpar caches de GLBs de mesas anteriores para evitar mistura de modelos
+    # Manter cache de previews dentro do teto estrito de 500 MB (LRU)
     try:
-        for p in PREVIEWS_DIR.glob("*_plate_*.glb"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
+        clean_preview_cache(MAX_PREVIEWS_CACHE_BYTES)
     except Exception as e:
-        logger.warning(f"Aviso ao limpar cache de mesas: {e}")
+        logger.warning(f"Aviso ao verificar cache de previews: {e}")
 
     # Inicia uma primeira varredura automática se a biblioteca existir
     if LIBRARY_PATH.exists():
@@ -88,6 +125,39 @@ async def start_scan(custom_path: Optional[str] = None):
 @app.get("/api/scan/status")
 async def scan_status():
     return scanner.get_status()
+
+@app.get("/api/cache/status")
+async def get_cache_status():
+    total_bytes = 0
+    files_count = 0
+    if PREVIEWS_DIR.exists():
+        for f in PREVIEWS_DIR.glob("*.glb"):
+            try:
+                total_bytes += f.stat().st_size
+                files_count += 1
+            except Exception:
+                pass
+    return {
+        "total_size_mb": round(total_bytes / (1024 * 1024), 1),
+        "max_size_mb": 500,
+        "files_count": files_count
+    }
+
+@app.post("/api/cache/clear")
+async def clear_cache():
+    freed = 0
+    if PREVIEWS_DIR.exists():
+        for f in PREVIEWS_DIR.glob("*.glb"):
+            try:
+                sz = f.stat().st_size
+                f.unlink()
+                freed += sz
+            except Exception:
+                pass
+    return {
+        "success": True,
+        "freed_mb": round(freed / (1024 * 1024), 1)
+    }
 
 @app.get("/api/stats")
 async def get_stats(db: AsyncSession = Depends(get_db)):
@@ -648,15 +718,20 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
 
     plate_glb_path = PREVIEWS_DIR / f"{item.file_hash}_plate_{plate_num}.glb"
     if plate_glb_path.exists():
+        try:
+            plate_glb_path.touch()
+        except Exception:
+            pass
         return FileResponse(
             path=str(plate_glb_path),
             media_type="model/gltf-binary",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+            headers={"Cache-Control": "public, max-age=86400"}
         )
 
     loop = asyncio.get_running_loop()
 
     def generate_plate_glb():
+        import io
         import zipfile
         import xml.etree.ElementTree as ET
         import numpy as np
@@ -669,20 +744,42 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
             return elem
 
         def get_mesh_from_model_xml(xml_bytes, target_obj_id=None):
-            root = strip_ns(ET.fromstring(xml_bytes))
             meshes = []
-            for obj in root.findall('.//object'):
-                if target_obj_id and str(obj.attrib.get('id', '')) != str(target_obj_id):
-                    continue
-                m_elem = obj.find('mesh')
-                if m_elem is not None:
-                    verts_elem = m_elem.find('vertices')
-                    tris_elem = m_elem.find('triangles')
-                    if verts_elem is not None and tris_elem is not None:
-                        verts = [[float(v.attrib['x']), float(v.attrib['y']), float(v.attrib['z'])] for v in verts_elem.findall('vertex') if 'x' in v.attrib and 'y' in v.attrib and 'z' in v.attrib]
-                        tris = [[int(t.attrib['v1']), int(t.attrib['v2']), int(t.attrib['v3'])] for t in tris_elem.findall('triangle') if 'v1' in t.attrib and 'v2' in t.attrib and 'v3' in t.attrib]
-                        if verts and tris:
-                            meshes.append(trimesh.Trimesh(vertices=verts, faces=tris))
+            try:
+                context = ET.iterparse(io.BytesIO(xml_bytes), events=('start', 'end'))
+                current_obj_id = None
+                is_target = False
+                verts = []
+                tris = []
+
+                for event, elem in context:
+                    tag = elem.tag.split('}')[-1]
+                    if event == 'start':
+                        if tag == 'object':
+                            current_obj_id = elem.attrib.get('id', '')
+                            is_target = (target_obj_id is None or str(current_obj_id) == str(target_obj_id))
+                    elif event == 'end':
+                        if is_target:
+                            if tag == 'vertex':
+                                at = elem.attrib
+                                if 'x' in at and 'y' in at and 'z' in at:
+                                    verts.append([float(at['x']), float(at['y']), float(at['z'])])
+                            elif tag == 'triangle':
+                                at = elem.attrib
+                                if 'v1' in at and 'v2' in at and 'v3' in at:
+                                    tris.append([int(at['v1']), int(at['v2']), int(at['v3'])])
+                        if tag == 'object':
+                            if is_target and verts and tris:
+                                try:
+                                    meshes.append(trimesh.Trimesh(vertices=verts, faces=tris))
+                                except Exception as ex:
+                                    logger.warning(f"Aviso ao construir Trimesh para objeto {current_obj_id}: {ex}")
+                                verts = []
+                                tris = []
+                            is_target = False
+                        elem.clear()
+            except Exception as e:
+                logger.warning(f"Erro no iterparse do 3MF: {e}")
             return meshes
 
         with zipfile.ZipFile(filepath) as z:
@@ -732,27 +829,9 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
             plate_meshes = []
             if '3D/3dmodel.model' in names:
                 try:
-                    root_3d = strip_ns(ET.fromstring(z.read('3D/3dmodel.model').decode('utf-8', errors='ignore')))
                     for oid in object_ids:
-                        for obj in root_3d.findall('.//object'):
-                            if str(obj.attrib.get('id', '')) == str(oid):
-                                comps = obj.findall('.//component')
-                                if comps:
-                                    for c in comps:
-                                        c_oid = c.attrib.get('objectid') or c.attrib.get('id')
-                                        c_path = ''
-                                        for attr_k, attr_v in c.attrib.items():
-                                            if 'path' in attr_k.lower():
-                                                c_path = attr_v.lstrip('/')
-                                        if c_path and c_path in names:
-                                            sub_meshes = get_mesh_from_model_xml(z.read(c_path), c_oid)
-                                            plate_meshes.extend(sub_meshes)
-                                        elif c_oid:
-                                            sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), c_oid)
-                                            plate_meshes.extend(sub_meshes)
-                                else:
-                                    sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), oid)
-                                    plate_meshes.extend(sub_meshes)
+                        sub_meshes = get_mesh_from_model_xml(z.read('3D/3dmodel.model'), oid)
+                        plate_meshes.extend(sub_meshes)
                 except Exception as e:
                     logger.debug(f"Aviso ao ler 3dmodel.model: {e}")
 
@@ -767,6 +846,10 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
             glb_data = combined.export(file_type='glb')
             with open(plate_glb_path, 'wb') as f:
                 f.write(glb_data)
+
+            # Manter cache sob o teto estrito de 500 MB (LRU)
+            clean_preview_cache(MAX_PREVIEWS_CACHE_BYTES)
+
             return plate_glb_path
 
     try:
@@ -780,7 +863,7 @@ async def get_model_plate_glb(model_id: int, plate_num: int, db: AsyncSession = 
     return FileResponse(
         path=str(plate_glb_path), 
         media_type="model/gltf-binary",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers={"Cache-Control": "public, max-age=86400"}
     )
 
 # Servir Frontend Estático
